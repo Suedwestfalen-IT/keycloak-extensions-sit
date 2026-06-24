@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.github.sit.keycloak</groupId>
+    <artifactId>keycloak-extensions-sit</artifactId>
+    <version>1.1.0</version>
+    <packaging>jar</packaging>
+
+    <name>keycloak-extensions-sit</name>
+    <description>
+        Keycloak SPI extensions by Südwestfalen-IT (SIT):
+        ACR/LoA broker forwarding and enforcement, conditional LOA authenticator,
+        filtered group claim mapper and IdP group mapper.
+    </description>
+    <url>https://github.com/SIT-NRW/keycloak-extensions-sit</url>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+        </license>
+    </licenses>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Override via -Dkeycloak.version=X.Y.Z or set in build_jar.sh -->
+        <keycloak.version>26.6.2</keycloak.version>
+    </properties>
+
+    <dependencies>
+        <!-- Keycloak SPI – provided at runtime by the server -->
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-server-spi</artifactId>
+            <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-server-spi-private</artifactId>
+            <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-services</artifactId>
+            <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.keycloak</groupId>
+            <artifactId>keycloak-core</artifactId>
+            <version>${keycloak.version}</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <archive>
+                        <manifestEntries>
+                            <Implementation-Title>${project.artifactId}</Implementation-Title>
+                            <Implementation-Version>${project.version}</Implementation-Version>
+                            <Keycloak-Version>${keycloak.version}</Keycloak-Version>
+                        </manifestEntries>
+                    </archive>
+                    <finalName>${project.artifactId}-${project.version}-kc${keycloak.version}</finalName>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
