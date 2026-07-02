@@ -21,6 +21,8 @@ import java.util.stream.Collectors;
  *  - Optional removal of memberships for groups NOT in the claim,
  *    scoped to a configurable managed-prefix so manually assigned groups
  *    are left untouched
+ *  - Target Group Prefix starting with "/" is treated as absolute (root-only match),
+ *    preventing accidental matches against same-named sub-groups
  */
 public class IdpGroupMapper extends AbstractClaimMapper {
 
@@ -29,12 +31,12 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     public static final String PROVIDER_ID = "sit-oidc-group-idp-mapper";
 
     // ── Config keys ──────────────────────────────────────────────────────────
-    static final String CLAIM_NAME       = "claim";
-    static final String TARGET_PREFIX    = "targetPrefix";
-    static final String GROUP_PREFIX     = "groupPrefix";
+    static final String CLAIM_NAME        = "claim";
+    static final String TARGET_PREFIX     = "targetPrefix";
+    static final String GROUP_PREFIX      = "groupPrefix";
     static final String REMOVE_NOT_LISTED = "removeNotListed";
-    static final String MANAGED_PREFIX   = "managedPrefix";
-    static final String CREATE_MISSING   = "createMissing";
+    static final String MANAGED_PREFIX    = "managedPrefix";
+    static final String CREATE_MISSING    = "createMissing";
 
     private static final List<ProviderConfigProperty> CONFIG_PROPERTIES;
 
@@ -62,7 +64,9 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         targetPrefix.setLabel("Target Group Prefix");
         targetPrefix.setHelpText(
             "If set, groups are placed under this prefix group, e.g. 'KC2' turns 'koki/koki-user' into 'KC2/koki/koki-user'. " +
-            "Also scopes removal to only groups under this prefix."
+            "Also scopes removal to only groups under this prefix. " +
+            "If the value starts with '/', the first segment is matched exclusively at root level " +
+            "(prevents accidental matches against same-named sub-groups like /Probe/SSO)."
         );
         targetPrefix.setType(ProviderConfigProperty.STRING_TYPE);
         targetPrefix.setDefaultValue("");
@@ -103,7 +107,6 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     }
     @Override public List<ProviderConfigProperty> getConfigProperties() { return CONFIG_PROPERTIES; }
     @Override public String[] getCompatibleProviders() { return new String[]{ "oidc" }; }
-
 
 
     // ── Entry points ─────────────────────────────────────────────────────────
@@ -154,17 +157,23 @@ public class IdpGroupMapper extends AbstractClaimMapper {
 
         String  claimName       = cfg(mapperModel, CLAIM_NAME,        "groups");
         String  prefix          = cfg(mapperModel, GROUP_PREFIX,       "");
-        String  targetPrefix    = stripLeadingSlash(cfg(mapperModel, TARGET_PREFIX,  ""));
         String  managedPrefix   = stripLeadingSlash(cfg(mapperModel, MANAGED_PREFIX, ""));
         boolean removeNotListed = cfgBool(mapperModel, REMOVE_NOT_LISTED);
         boolean createMissing   = cfgBool(mapperModel, CREATE_MISSING);
+
+        // Preserve leading slash as "absolute" signal before stripping
+        String  rawTargetPrefix         = cfg(mapperModel, TARGET_PREFIX, "");
+        boolean targetPrefixAbsolute    = rawTargetPrefix.startsWith("/");
+        String  targetPrefix            = stripLeadingSlash(rawTargetPrefix);
 
         // effective managed scope: targetPrefix wins over managedPrefix if set
         String effectiveScope = !targetPrefix.isEmpty() ? targetPrefix : managedPrefix;
 
         Set<String> claimedRaw = extractGroupsFromClaim(context, claimName, prefix);
-        LOG.debugf("IdpGroupMapper: user=%s claimedRaw=%s targetPrefix=%s", user.getUsername(), claimedRaw, targetPrefix);
-        LOG.infof("IdpGroupMapper: syncGroups removeNotListed=%b createMissing=%b effectiveScope='%s'", removeNotListed, createMissing, effectiveScope);
+        LOG.debugf("IdpGroupMapper: user=%s claimedRaw=%s targetPrefix=%s (absolute=%b)",
+                user.getUsername(), claimedRaw, targetPrefix, targetPrefixAbsolute);
+        LOG.infof("IdpGroupMapper: syncGroups removeNotListed=%b createMissing=%b effectiveScope='%s'",
+                removeNotListed, createMissing, effectiveScope);
 
         // Build full paths including targetPrefix, e.g. "KC2/koki/koki-user"
         Set<String> claimedFull = new java.util.LinkedHashSet<>();
@@ -174,7 +183,7 @@ public class IdpGroupMapper extends AbstractClaimMapper {
 
         // Add
         for (String fullPath : claimedFull) {
-            GroupModel group = resolveGroup(realm, fullPath, createMissing);
+            GroupModel group = resolveGroup(realm, fullPath, createMissing, targetPrefixAbsolute);
             if (group != null && !user.isMemberOf(group)) {
                 user.joinGroup(group);
                 LOG.infof("IdpGroupMapper: added '%s' → group '%s'", user.getUsername(), fullPath);
@@ -208,28 +217,47 @@ public class IdpGroupMapper extends AbstractClaimMapper {
      * Resolves a slash-separated group path, e.g. "org/team-a".
      * Each segment is matched as a child of the previous one.
      * Creates intermediate groups when {@code createMissing} is true.
+     *
+     * @param rootOnly if true, the first path segment is matched exclusively
+     *                 against top-level groups (parentId == null), preventing
+     *                 accidental matches against same-named sub-groups.
      */
-    private GroupModel resolveGroup(RealmModel realm, String path, boolean createMissing) {
+    private GroupModel resolveGroup(RealmModel realm, String path, boolean createMissing, boolean rootOnly) {
         String[] segments = path.split("/");
         GroupModel current = null;
 
         for (String segment : segments) {
             if (segment.isBlank()) continue;
-            current = (current == null)
-                ? findTopLevel(realm, segment, createMissing)
-                : findChild(realm, current, segment, createMissing);
+            if (current == null) {
+                current = findTopLevel(realm, segment, createMissing, rootOnly);
+            } else {
+                current = findChild(realm, current, segment, createMissing);
+            }
             if (current == null) return null; // not found and not created
         }
         return current;
     }
 
-    private GroupModel findTopLevel(RealmModel realm, String name, boolean createMissing) {
+    /** Convenience overload — defaults to rootOnly=true (safe default). */
+    private GroupModel resolveGroup(RealmModel realm, String path, boolean createMissing) {
+        return resolveGroup(realm, path, createMissing, true);
+    }
+
+    /**
+     * Finds (or creates) a top-level group by name.
+     *
+     * @param rootOnly if true, only groups with parentId == null are considered,
+     *                 preventing false matches against sub-groups with the same name.
+     */
+    private GroupModel findTopLevel(RealmModel realm, String name, boolean createMissing, boolean rootOnly) {
         Optional<GroupModel> found = realm.getGroupsStream()
+                .filter(g -> !rootOnly || g.getParentId() == null)
                 .filter(g -> name.equals(g.getName()))
                 .findFirst();
         if (found.isPresent()) return found.get();
         if (!createMissing) {
-            LOG.warnf("IdpGroupMapper: top-level group '%s' not found, createMissing=false", name);
+            LOG.warnf("IdpGroupMapper: top-level group '%s' not found (rootOnly=%b), createMissing=false",
+                    name, rootOnly);
             return null;
         }
         GroupModel g = realm.createGroup(name);

@@ -1,6 +1,7 @@
 # keycloak-extensions-sit
 
 Keycloak SPI extensions by **Südwestfalen-IT (SIT)** for multi-tenant SSO platforms.
+Built with Claude.
 
 ## Extensions
 
