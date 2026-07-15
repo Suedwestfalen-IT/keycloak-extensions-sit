@@ -12,6 +12,7 @@ import org.keycloak.protocol.oidc.utils.AcrUtils;
 import org.keycloak.sessions.AuthenticationSessionModel;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Keycloak Authenticator (SPI).
@@ -44,19 +45,34 @@ public class ForwardAcrToBrokerAuthenticator implements Authenticator {
         AuthenticationSessionModel authSession = context.getAuthenticationSession();
         ClientModel client = authSession.getClient();
 
-        String acr = resolveClientAcr(client);
-        if (acr != null && !acr.isEmpty()) {
-            // The redirector forwards this note as acr_values to the upstream IdP.
-            authSession.setClientNote(OAuth2Constants.ACR_VALUES, acr);
-            LOG.debugf("Forwarding acr_values=%s to broker for client %s",
-                    acr, client.getClientId());
-        } else {
-            LOG.tracef("No client ACR configured for %s - nothing to forward",
-                    client.getClientId());
+        String requested = authSession.getClientNote(OAuth2Constants.ACR_VALUES);
+        String configured = resolveClientAcr(client);
+
+        String effective = maxAcr(requested, configured, client);
+
+        if (effective != null && !effective.isEmpty()
+                && !effective.equals(requested)) {
+            authSession.setClientNote(OAuth2Constants.ACR_VALUES, effective);
+            LOG.debugf("Forwarding acr_values=%s to broker for client %s "
+                    + "(requested=%s, configured=%s)",
+                    effective, client.getClientId(), requested, configured);
         }
 
-        // Passive step: never blocks, just continues the flow.
         context.success();
+    }
+
+    private String maxAcr(String requested, String configured, ClientModel client) {
+        if (requested == null || requested.isEmpty()) return configured;
+        if (configured == null || configured.isEmpty()) return requested;
+
+        Map<String, Integer> loaMap = AcrUtils.getAcrLoaMap(client.getRealm());
+        int reqLevel = loaMap.getOrDefault(requested, -1);
+        int confLevel = loaMap.getOrDefault(configured, -1);
+
+        // Unbekannte Werte: lieber den angeforderten durchreichen
+        if (reqLevel < 0 || confLevel < 0) return requested;
+
+        return reqLevel >= confLevel ? requested : configured;
     }
 
     /**
