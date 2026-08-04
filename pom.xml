@@ -13,7 +13,8 @@
     <description>
         Keycloak SPI extensions by Südwestfalen-IT (SIT):
         ACR/LoA broker forwarding and enforcement, conditional LOA authenticator,
-        filtered group claim mapper and IdP group mapper.
+        filtered group claim mapper, IdP group mapper and a WebAuthn passwordless
+        registration action that tolerates a missing attestation statement.
     </description>
     <url>https://github.com/SIT-NRW/keycloak-extensions-sit</url>
 
