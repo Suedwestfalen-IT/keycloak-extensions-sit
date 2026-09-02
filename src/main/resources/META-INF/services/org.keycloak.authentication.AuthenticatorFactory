@@ -1,3 +1,4 @@
 nrw.sit.keycloak.authenticator.ForwardAcrToBrokerAuthenticatorFactory
 nrw.sit.keycloak.authenticator.EnforceBrokerAcrAuthenticatorFactory
 nrw.sit.keycloak.authenticator.RequestedLoaConditionalAuthenticatorFactory
+nrw.sit.keycloak.authenticator.OtpFormNoSetupAuthenticatorFactory
