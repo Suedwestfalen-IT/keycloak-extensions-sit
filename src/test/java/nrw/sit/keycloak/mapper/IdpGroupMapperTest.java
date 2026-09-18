@@ -34,6 +34,11 @@ class IdpGroupMapperTest {
     }
 
     @Test
+    void parsePrefixesAcceptsJsonArrayStyleValues() {
+        assertEquals(List.of("/AA", "/B"), IdpGroupMapper.parsePrefixes("[\"/AA\", \"/B\"]"));
+    }
+
+    @Test
     void parsePrefixesDropsEmptyAndDuplicateEntries() {
         assertEquals(List.of("/A"), IdpGroupMapper.parsePrefixes("/A,,/A, "));
     }

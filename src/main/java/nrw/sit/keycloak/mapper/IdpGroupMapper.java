@@ -62,12 +62,12 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         prefix.setName(GROUP_PREFIX);
         prefix.setLabel("Group Path Prefixes to Strip");
         prefix.setHelpText(
-            "One or more prefixes stripped from every claim value before matching. " +
-            "Separate multiple prefixes with a comma, a new line or '##', " +
-            "e.g. '/PartnerA, /PartnerB' turns '/PartnerA/team-1' into 'team-1'. " +
-            "The longest matching prefix wins; claim values matching no prefix are used unchanged."
+            "Prefixes stripped from every claim value before matching. Add one entry per " +
+            "top-level group of the upstream IdP, e.g. '/PartnerA' and '/PartnerB' both map " +
+            "'/PartnerX/team-1' to 'team-1'. The longest matching prefix wins; claim values " +
+            "matching no prefix are used unchanged."
         );
-        prefix.setType(ProviderConfigProperty.STRING_TYPE);
+        prefix.setType(ProviderConfigProperty.MULTIVALUED_STRING_TYPE);
         prefix.setDefaultValue("");
         CONFIG_PROPERTIES.add(prefix);
 
@@ -349,19 +349,33 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     }
 
     /**
-     * Parses the configured prefix list. Multiple prefixes may be separated by a comma,
-     * a new line or Keycloak's '##' delimiter. The result is sorted by length descending,
+     * Parses the configured prefix list. The admin console stores the multivalued field
+     * joined with Keycloak's '##' delimiter; a comma or new line is accepted as well, so
+     * values written before this field became multivalued keep working. The result is
+     * sorted by length descending,
      * so that {@link #stripPrefix} always removes the longest matching prefix
      * (e.g. "/PartnerAB" wins over "/PartnerA").
      */
     static List<String> parsePrefixes(String raw) {
         if (raw == null || raw.isBlank()) return Collections.emptyList();
-        return PREFIX_SEPARATOR.splitAsStream(raw)
+        String value = raw.trim();
+        // Tolerate a JSON array, e.g. from a hand-edited realm export: ["/A", "/B"]
+        if (value.startsWith("[") && value.endsWith("]")) {
+            value = value.substring(1, value.length() - 1);
+        }
+        return PREFIX_SEPARATOR.splitAsStream(value)
                 .map(String::trim)
+                .map(IdpGroupMapper::unquote)
                 .filter(s -> !s.isEmpty())
                 .distinct()
                 .sorted(Comparator.comparingInt(String::length).reversed())
                 .collect(Collectors.toList());
+    }
+
+    /** Strips surrounding double quotes left over from a JSON-array style config value. */
+    private static String unquote(String value) {
+        return (value.length() >= 2 && value.startsWith("\"") && value.endsWith("\""))
+                ? value.substring(1, value.length() - 1).trim() : value;
     }
 
     /**
