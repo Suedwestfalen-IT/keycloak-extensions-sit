@@ -62,12 +62,15 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         prefix.setName(GROUP_PREFIX);
         prefix.setLabel("Group Path Prefixes to Strip");
         prefix.setHelpText(
-            "Prefixes stripped from every claim value before matching. Add one entry per " +
-            "top-level group of the upstream IdP, e.g. '/PartnerA' and '/PartnerB' both map " +
-            "'/PartnerX/team-1' to 'team-1'. The longest matching prefix wins; claim values " +
-            "matching no prefix are used unchanged."
+            "Prefixes stripped from every claim value before matching. Enter one prefix per " +
+            "line (a comma works too), one for each top-level group of the upstream IdP, " +
+            "e.g. '/PartnerA' and '/PartnerB' both map '/PartnerX/team-1' to 'team-1'. " +
+            "The longest matching prefix wins; claim values matching no prefix are used unchanged."
         );
-        prefix.setType(ProviderConfigProperty.MULTIVALUED_STRING_TYPE);
+        // NOTE: deliberately not MULTIVALUED_STRING_TYPE. The admin console posts such a field
+        // as a JSON array, but IdentityProviderMapperRepresentation.config is a
+        // Map<String, String> – saving the mapper then fails with "Cannot parse the JSON".
+        prefix.setType(ProviderConfigProperty.TEXT_TYPE);
         prefix.setDefaultValue("");
         CONFIG_PROPERTIES.add(prefix);
 
@@ -349,9 +352,9 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     }
 
     /**
-     * Parses the configured prefix list. The admin console stores the multivalued field
-     * joined with Keycloak's '##' delimiter; a comma or new line is accepted as well, so
-     * values written before this field became multivalued keep working. The result is
+     * Parses the configured prefix list. Prefixes are separated by a new line, a comma or
+     * Keycloak's '##' delimiter, so a value entered in the textarea, a previously configured
+     * single value and a value set via the admin REST API all work. The result is
      * sorted by length descending,
      * so that {@link #stripPrefix} always removes the longest matching prefix
      * (e.g. "/PartnerAB" wins over "/PartnerA").

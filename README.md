@@ -52,13 +52,11 @@ as slash-separated paths (`org/team-a`).
 ### Stripping multiple prefixes
 
 Upstream IdPs often keep the relevant groups below **several** top-level groups. To merge them
-into one group on this side, add one entry per top-level group in *Group Path Prefixes to Strip*.
-The field is multivalued, so the admin console shows one input row per prefix plus an **Add**
-button:
+into one group on this side, enter one prefix per line in *Group Path Prefixes to Strip*:
 
 ```
-Group Path Prefixes to Strip: [ /PartnerA ]
-                              [ /PartnerB ]
+Group Path Prefixes to Strip: /PartnerA
+                              /PartnerB
 
 Claim:                        ["/PartnerA/team-1", "/PartnerB/team-2"]
 Target Group Prefix:          KC2
@@ -73,9 +71,12 @@ Details:
   removed), so the mapper never silently drops groups.
 * A prefix is matched as a plain string prefix, not segment-wise — `/SSO` also matches
   `/SSOX/a`. Use the full path segment (`/SSO`) to avoid surprises.
-* The admin console stores the entries joined with Keycloak's `##` delimiter. When configuring
-  the mapper via the admin REST API or a realm import, a comma-separated or JSON-array value is
-  accepted as well. A previously configured single value keeps working unchanged.
+* Besides the new line, a comma and Keycloak's `##` delimiter are accepted as separators, so
+  the mapper can also be configured via the admin REST API or a realm import. A previously
+  configured single value keeps working unchanged.
+* The option is a text field, **not** a multivalued one: the admin console posts a multivalued
+  field as a JSON array, while `IdentityProviderMapperRepresentation.config` is a
+  `Map<String, String>` — saving the mapper would fail with *Cannot parse the JSON*.
 
 ---
 
