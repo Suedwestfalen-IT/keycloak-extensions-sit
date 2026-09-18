@@ -34,6 +34,46 @@ Built with Claude.
 services/src/main/java/org/keycloak/authentication/requiredactions/WebAuthnRegister.java
 ---
 
+## Group Membership from Claim (`sit-oidc-group-idp-mapper`)
+
+Identity provider mapper that reads a JSON-array claim from the upstream IdP token and
+synchronises the brokered user's group memberships in this realm. Nested groups are expressed
+as slash-separated paths (`org/team-a`).
+
+| Option | Key | Purpose |
+|---|---|---|
+| Groups Claim Name | `claim` | JWT claim holding the list of groups. Default `groups`. |
+| Group Path Prefixes to Strip | `groupPrefix` | One or more prefixes removed from every claim value before matching (see below). |
+| Target Group Prefix | `targetPrefix` | Groups are placed below this group. A leading `/` matches the first segment at root level only. Also scopes the removal. |
+| Create groups that do not exist | `createMissing` | Auto-creates missing groups including intermediate parents. |
+| Remove group memberships not in claim | `removeNotListed` | Removes memberships that are not present in the claim, limited to the managed scope. |
+| Managed Group Prefix | `managedPrefix` | Limits removal to groups below this prefix. Ignored when `targetPrefix` is set. |
+
+### Stripping multiple prefixes
+
+Upstream IdPs often keep the relevant groups below **several** top-level groups. To merge them
+into one group on this side, list all of them in *Group Path Prefixes to Strip*, separated by a
+comma, a new line or Keycloak's `##` delimiter:
+
+```
+Claim:                        ["/PartnerA/team-1", "/PartnerB/team-2"]
+Group Path Prefixes to Strip: /PartnerA, /PartnerB
+Target Group Prefix:          KC2
+→ group memberships:          KC2/team-1, KC2/team-2
+```
+
+Details:
+
+* The **longest matching prefix wins**, so `/PartnerA` and `/PartnerAB` can be configured side
+  by side regardless of their order.
+* Claim values matching **none** of the prefixes are used unchanged (only leading slashes are
+  removed), so the mapper never silently drops groups.
+* A prefix is matched as a plain string prefix, not segment-wise — `/SSO` also matches
+  `/SSOX/a`. Use the full path segment (`/SSO`) to avoid surprises.
+* A single value keeps working exactly as before, so existing mappers need no change.
+
+---
+
 ## ACR Step-Up via Broker (ForwardAcr + EnforceBrokerAcr)
 
 These two authenticators work together in a broker realm to implement tamper-proof ACR step-up:

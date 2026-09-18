@@ -7,6 +7,7 @@ import org.keycloak.models.*;
 import org.keycloak.provider.ProviderConfigProperty;
 
 import java.util.*;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -17,6 +18,9 @@ import java.util.stream.Collectors;
  *
  * Features:
  *  - Nested groups via slash-separated paths, e.g. "org/team-a"
+ *  - Multiple group path prefixes can be stripped from the claim values,
+ *    so several top-level groups of the upstream IdP can be merged into one
+ *    target group (see GROUP_PREFIX)
  *  - Optional auto-creation of missing groups (including intermediate parents)
  *  - Optional removal of memberships for groups NOT in the claim,
  *    scoped to a configurable managed-prefix so manually assigned groups
@@ -38,6 +42,9 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     static final String MANAGED_PREFIX    = "managedPrefix";
     static final String CREATE_MISSING    = "createMissing";
 
+    /** Splits the GROUP_PREFIX config value at comma, new line or Keycloak's '##' delimiter. */
+    private static final Pattern PREFIX_SEPARATOR = Pattern.compile("##|[,\\r\\n]");
+
     private static final List<ProviderConfigProperty> CONFIG_PROPERTIES;
 
     static {
@@ -53,8 +60,13 @@ public class IdpGroupMapper extends AbstractClaimMapper {
 
         ProviderConfigProperty prefix = new ProviderConfigProperty();
         prefix.setName(GROUP_PREFIX);
-        prefix.setLabel("Group Path Prefix to Strip");
-        prefix.setHelpText("Prefix stripped from every claim value before matching. E.g. '/' turns '/admins' into 'admins'.");
+        prefix.setLabel("Group Path Prefixes to Strip");
+        prefix.setHelpText(
+            "One or more prefixes stripped from every claim value before matching. " +
+            "Separate multiple prefixes with a comma, a new line or '##', " +
+            "e.g. '/PartnerA, /PartnerB' turns '/PartnerA/team-1' into 'team-1'. " +
+            "The longest matching prefix wins; claim values matching no prefix are used unchanged."
+        );
         prefix.setType(ProviderConfigProperty.STRING_TYPE);
         prefix.setDefaultValue("");
         CONFIG_PROPERTIES.add(prefix);
@@ -156,7 +168,7 @@ public class IdpGroupMapper extends AbstractClaimMapper {
                             BrokeredIdentityContext context) {
 
         String  claimName       = cfg(mapperModel, CLAIM_NAME,        "groups");
-        String  prefix          = cfg(mapperModel, GROUP_PREFIX,       "");
+        List<String> prefixes   = parsePrefixes(mapperModel.getConfig().get(GROUP_PREFIX));
         String  managedPrefix   = stripLeadingSlash(cfg(mapperModel, MANAGED_PREFIX, ""));
         boolean removeNotListed = cfgBool(mapperModel, REMOVE_NOT_LISTED);
         boolean createMissing   = cfgBool(mapperModel, CREATE_MISSING);
@@ -169,9 +181,9 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         // effective managed scope: targetPrefix wins over managedPrefix if set
         String effectiveScope = !targetPrefix.isEmpty() ? targetPrefix : managedPrefix;
 
-        Set<String> claimedRaw = extractGroupsFromClaim(context, claimName, prefix);
-        LOG.debugf("IdpGroupMapper: user=%s claimedRaw=%s targetPrefix=%s (absolute=%b)",
-                user.getUsername(), claimedRaw, targetPrefix, targetPrefixAbsolute);
+        Set<String> claimedRaw = extractGroupsFromClaim(context, claimName, prefixes);
+        LOG.debugf("IdpGroupMapper: user=%s prefixes=%s claimedRaw=%s targetPrefix=%s (absolute=%b)",
+                user.getUsername(), prefixes, claimedRaw, targetPrefix, targetPrefixAbsolute);
         LOG.infof("IdpGroupMapper: syncGroups removeNotListed=%b createMissing=%b effectiveScope='%s'",
                 removeNotListed, createMissing, effectiveScope);
 
@@ -304,7 +316,7 @@ public class IdpGroupMapper extends AbstractClaimMapper {
 
     @SuppressWarnings("unchecked")
     private Set<String> extractGroupsFromClaim(BrokeredIdentityContext context,
-                                               String claimName, String prefix) {
+                                               String claimName, List<String> prefixes) {
         Object raw = getClaimValue(context, claimName); // from AbstractClaimMapper
         if (raw == null) {
             LOG.debugf("IdpGroupMapper: claim '%s' not present", claimName);
@@ -325,7 +337,7 @@ public class IdpGroupMapper extends AbstractClaimMapper {
                 .filter(Objects::nonNull)
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
-                .map(s -> stripPrefix(s, prefix))
+                .map(s -> stripPrefix(s, prefixes))
                 .collect(Collectors.toSet());
     }
 
@@ -336,9 +348,35 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         return v;
     }
 
-    private String stripPrefix(String value, String prefix) {
-        String result = (prefix != null && !prefix.isEmpty() && value.startsWith(prefix))
-                ? value.substring(prefix.length()) : value;
+    /**
+     * Parses the configured prefix list. Multiple prefixes may be separated by a comma,
+     * a new line or Keycloak's '##' delimiter. The result is sorted by length descending,
+     * so that {@link #stripPrefix} always removes the longest matching prefix
+     * (e.g. "/PartnerAB" wins over "/PartnerA").
+     */
+    static List<String> parsePrefixes(String raw) {
+        if (raw == null || raw.isBlank()) return Collections.emptyList();
+        return PREFIX_SEPARATOR.splitAsStream(raw)
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .distinct()
+                .sorted(Comparator.comparingInt(String::length).reversed())
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Removes the first matching prefix (longest one first) from a claim value.
+     * Values matching none of the prefixes are returned unchanged apart from
+     * leading slashes.
+     */
+    static String stripPrefix(String value, List<String> prefixes) {
+        String result = value;
+        for (String prefix : prefixes) {
+            if (value.startsWith(prefix)) {
+                result = value.substring(prefix.length());
+                break;
+            }
+        }
         // Remove leading slashes left after stripping (e.g. "/SSO/a" → strip "/SSO" → "/a" → "a")
         while (result.startsWith("/")) result = result.substring(1);
         return result;
