@@ -6,7 +6,7 @@
 
     <groupId>io.github.sit.keycloak</groupId>
     <artifactId>keycloak-extensions-sit</artifactId>
-    <version>1.3.0</version>
+    <version>1.5.3</version>
     <packaging>jar</packaging>
 
     <name>keycloak-extensions-sit</name>
