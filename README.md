@@ -69,6 +69,9 @@ Details:
   by side regardless of their order.
 * Claim values matching **none** of the prefixes are used unchanged (only leading slashes are
   removed), so the mapper never silently drops groups.
+* A claim value that **equals** a prefix (e.g. `/PartnerA` itself, often sent when the user is a
+  direct member of the parent group) strips to an empty string and is ignored, so the user is
+  never added to the target group itself.
 * A prefix is matched as a plain string prefix, not segment-wise — `/SSO` also matches
   `/SSOX/a`. Use the full path segment (`/SSO`) to avoid surprises.
 * Besides the new line, a comma and Keycloak's `##` delimiter are accepted as separators, so

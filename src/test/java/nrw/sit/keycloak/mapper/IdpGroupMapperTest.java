@@ -80,6 +80,15 @@ class IdpGroupMapperTest {
     }
 
     @Test
+    void stripPrefixReturnsEmptyWhenValueEqualsPrefix() {
+        // extractGroupsFromClaim filters these out so the target group itself is never joined
+        List<String> prefixes = IdpGroupMapper.parsePrefixes("/PartnerA, /PartnerB");
+        assertEquals("", IdpGroupMapper.stripPrefix("/PartnerA", prefixes));
+        assertEquals("", IdpGroupMapper.stripPrefix("/PartnerB/", prefixes));
+        assertEquals("", IdpGroupMapper.stripPrefix("/", Collections.emptyList()));
+    }
+
+    @Test
     void stripPrefixStripsLeadingSlashesWithoutConfiguredPrefix() {
         assertEquals("admins", IdpGroupMapper.stripPrefix("/admins", Collections.emptyList()));
         assertEquals("admins", IdpGroupMapper.stripPrefix("/admins", IdpGroupMapper.parsePrefixes("/")));

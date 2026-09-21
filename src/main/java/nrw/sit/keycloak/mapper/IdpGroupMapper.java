@@ -341,6 +341,9 @@ public class IdpGroupMapper extends AbstractClaimMapper {
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
                 .map(s -> stripPrefix(s, prefixes))
+                // A value equal to a prefix (e.g. "/PartnerA" itself) strips to "". Drop it,
+                // otherwise targetPrefix + "/" + "" would resolve to the target group itself.
+                .filter(s -> !s.isEmpty())
                 .collect(Collectors.toSet());
     }
 
