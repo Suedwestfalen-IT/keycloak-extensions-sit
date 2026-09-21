@@ -102,10 +102,11 @@ public class EnforceBrokerAcrAuthenticator implements Authenticator {
     }
 
     /**
+     * Package-private for unit tests.
      * Level required by the requesting client: minimum.acr.value takes
      * precedence, otherwise the first default.acr.values entry. 0 if none.
      */
-    private int resolveRequiredLevel(ClientModel client, Map<String, Integer> loaMap) {
+    int resolveRequiredLevel(ClientModel client, Map<String, Integer> loaMap) {
         String required = AcrUtils.getMinimumAcrValue(client);
         if (required == null || required.isEmpty()) {
             List<String> defaults = AcrUtils.getDefaultAcrValues(client);
@@ -115,7 +116,7 @@ public class EnforceBrokerAcrAuthenticator implements Authenticator {
     }
 
     /** Reads the acr claim from the validated upstream ID token, if present. */
-    private String resolveUpstreamAcr(BrokeredIdentityContext brokerContext) {
+    String resolveUpstreamAcr(BrokeredIdentityContext brokerContext) {
         Object tokenObj = brokerContext.getContextData().get(OIDCIdentityProvider.VALIDATED_ID_TOKEN);
         if (!(tokenObj instanceof JsonWebToken)) {
             return null;
@@ -132,7 +133,7 @@ public class EnforceBrokerAcrAuthenticator implements Authenticator {
     }
 
     /** Maps an ACR value to a numeric level via the realm map, with numeric fallback. */
-    private int acrToLevel(String acr, Map<String, Integer> loaMap) {
+    int acrToLevel(String acr, Map<String, Integer> loaMap) {
         if (acr == null || acr.isEmpty()) {
             return 0;
         }
@@ -148,7 +149,7 @@ public class EnforceBrokerAcrAuthenticator implements Authenticator {
         }
     }
 
-    private boolean isEnforce(AuthenticationFlowContext context) {
+    boolean isEnforce(AuthenticationFlowContext context) {
         AuthenticatorConfigModel cfg = context.getAuthenticatorConfig();
         if (cfg == null || cfg.getConfig() == null) {
             return true; // secure by default

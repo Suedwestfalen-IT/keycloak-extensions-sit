@@ -9,17 +9,17 @@ set -euo pipefail
 # Ergebnis: dist/keycloak-extensions-sit-v<VERSION>-kc<KC_VERSION>.jar
 #
 # Steuerung via .env oder Umgebungsvariablen:
-#   KC_VERSION     Keycloak-Zielversion (default: 26.6.2)
+#   KC_VERSION     Keycloak-Zielversion (default: 26.7.4)
 #   VERSION        Provider-Version     (default: aus pom.xml)
 #   MAVEN_IMAGE    Maven-Docker-Image   (default: maven:3.9-eclipse-temurin-17)
 #   OUTPUT_DIR     Ausgabeverzeichnis   (default: ./dist)
 #
-# Alternativ: mvn clean package -Dkeycloak.version=26.6.2
+# Alternativ: mvn clean package -Dkeycloak.version=26.7.4
 # =====================================================================
 
 [ ! -f .env ] || export $(grep -v '^#' .env | xargs)
 
-KC_VERSION="${KC_VERSION:-26.6.2}"
+KC_VERSION="${KC_VERSION:-26.7.4}"
 MAVEN_IMAGE="${MAVEN_IMAGE:-maven:3.9-eclipse-temurin-17}"
 OUTPUT_DIR="${OUTPUT_DIR:-./dist}"
 

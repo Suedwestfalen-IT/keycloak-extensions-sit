@@ -34,6 +34,23 @@ Built with Claude.
 services/src/main/java/org/keycloak/authentication/requiredactions/WebAuthnRegister.java
 ---
 
+## Tests
+
+Unit tests (JUnit 5 + Mockito) live in `src/test/java`. They run without a Keycloak server:
+Keycloak's model interfaces are mocked, and the SPI jars are already on the test classpath
+through the `provided` dependencies.
+
+```bash
+./run_tests.sh                              # via Docker, same .env as build_jar.sh
+./run_tests.sh -Dtest=IdpGroupMapperTest    # single class
+mvn test -Dkeycloak.version=26.7.4          # local Maven/JDK 17+
+```
+
+`build_jar.sh` and the image build keep using `-DskipTests`; the test code is compiled there
+but not executed.
+
+---
+
 ## Group Membership from Claim (`sit-oidc-group-idp-mapper`)
 
 Identity provider mapper that reads a JSON-array claim from the upstream IdP token and
@@ -208,7 +225,7 @@ instead of the passwordless variants; the overridden method is identical.
 
 ```bash
 # Build for a specific Keycloak version
-KC_VERSION=26.6.2 ./build_jar.sh
+KC_VERSION=26.7.4 ./build_jar.sh
 
 # Or via environment / .env file
 cp .env.sample .env   # edit KC_VERSION, VERSION, etc.
@@ -220,7 +237,7 @@ Output: `dist/keycloak-extensions-sit-v<VERSION>-kc<KC_VERSION>.jar`
 **Without Docker (plain Maven):**
 
 ```bash
-mvn clean package -Dkeycloak.version=26.6.2
+mvn clean package -Dkeycloak.version=26.7.4
 ```
 
 **Behind a proxy:** Copy `settings.xml.sample` to `settings.xml` and adjust the proxy host/port. `build_jar.sh` picks it up automatically if present.

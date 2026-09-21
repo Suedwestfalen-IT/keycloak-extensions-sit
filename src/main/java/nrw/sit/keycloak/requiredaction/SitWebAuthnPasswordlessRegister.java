@@ -135,7 +135,8 @@ public class SitWebAuthnPasswordlessRegister extends WebAuthnPasswordlessRegiste
      * whatever it likes. It reliably tells apart an ordinary user with a password manager from
      * an ordinary user with a TPM - not an attacker from an honest party.</p>
      */
-    private static class SyncedCredentialVerifier implements CustomRegistrationVerifier {
+    /* package-private for unit tests */
+    static class SyncedCredentialVerifier implements CustomRegistrationVerifier {
 
         private final boolean reject;
 
