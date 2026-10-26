@@ -27,6 +27,8 @@ import java.util.stream.Collectors;
  *    are left untouched
  *  - Target Group Prefix starting with "/" is treated as absolute (root-only match),
  *    preventing accidental matches against same-named sub-groups
+ *  - Groups carrying administrative roles are only joined when the identity provider
+ *    allows admin role mapping (Keycloak 26.8+, same check as the built-in group mappers)
  */
 public class IdpGroupMapper extends AbstractClaimMapper {
 
@@ -130,14 +132,14 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     @Override
     public void importNewUser(KeycloakSession session, RealmModel realm, UserModel user,
                               IdentityProviderMapperModel mapperModel, BrokeredIdentityContext context) {
-        syncGroups(realm, user, mapperModel, context);
+        syncGroups(session, realm, user, mapperModel, context);
     }
 
     /** Called on subsequent logins when sync mode is FORCE. */
     @Override
     public void updateBrokeredUser(KeycloakSession session, RealmModel realm, UserModel user,
                                    IdentityProviderMapperModel mapperModel, BrokeredIdentityContext context) {
-        syncGroups(realm, user, mapperModel, context);
+        syncGroups(session, realm, user, mapperModel, context);
     }
 
     /**
@@ -160,13 +162,13 @@ public class IdpGroupMapper extends AbstractClaimMapper {
 
         if (user == null) return; // new user – importNewUser will handle it
 
-        syncGroups(realm, user, mapperModel, context);
+        syncGroups(session, realm, user, mapperModel, context);
     }
 
 
     // ── Core logic ───────────────────────────────────────────────────────────
 
-    private void syncGroups(RealmModel realm, UserModel user,
+    private void syncGroups(KeycloakSession session, RealmModel realm, UserModel user,
                             IdentityProviderMapperModel mapperModel,
                             BrokeredIdentityContext context) {
 
@@ -200,6 +202,13 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         for (String fullPath : claimedFull) {
             GroupModel group = resolveGroup(realm, fullPath, createMissing, targetPrefixAbsolute);
             if (group != null && !user.isMemberOf(group)) {
+                // Keycloak 26.8+ (CVE-2026-12388): groups granting admin roles require the IdP
+                // option "allowAdminRoleMapping"; Keycloak logs the denial itself.
+                // Only joining is guarded, existing memberships are left alone like upstream.
+                if (!isAdminGroupJoinAllowed(session, realm, group, mapperModel)) {
+                    LOG.infof("IdpGroupMapper: skipped admin group '%s' for '%s'", fullPath, user.getUsername());
+                    continue;
+                }
                 user.joinGroup(group);
                 LOG.infof("IdpGroupMapper: added '%s' → group '%s'", user.getUsername(), fullPath);
             }

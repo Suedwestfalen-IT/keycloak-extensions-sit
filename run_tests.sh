@@ -5,18 +5,18 @@ set -euo pipefail
 #
 # Führt die Unit-Tests lokal via Docker (Maven) aus. Gleiche Steuerung
 # wie build_jar.sh über .env oder Umgebungsvariablen:
-#   KC_VERSION     Keycloak-Zielversion (default: 26.7.4)
+#   KC_VERSION     Keycloak-Zielversion (default: 26.8.1)
 #   MAVEN_IMAGE    Maven-Docker-Image   (default: maven:3.9-eclipse-temurin-17)
 #
 # Zusätzliche Argumente gehen an Maven durch, z.B.:
 #   ./run_tests.sh -Dtest=IdpGroupMapperTest
 #
-# Alternativ ohne Docker: mvn test -Dkeycloak.version=26.7.4
+# Alternativ ohne Docker: mvn test -Dkeycloak.version=26.8.1
 # =====================================================================
 
 [ ! -f .env ] || export $(grep -v '^#' .env | xargs)
 
-KC_VERSION="${KC_VERSION:-26.7.4}"
+KC_VERSION="${KC_VERSION:-26.8.1}"
 MAVEN_IMAGE="${MAVEN_IMAGE:-maven:3.9-eclipse-temurin-17}"
 
 SETTINGS_MOUNT=""

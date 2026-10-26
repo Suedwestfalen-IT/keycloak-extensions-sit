@@ -4,11 +4,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.keycloak.broker.oidc.OIDCIdentityProvider;
 import org.keycloak.broker.provider.BrokeredIdentityContext;
+import org.keycloak.models.ClientModel;
+import org.keycloak.models.Constants;
 import org.keycloak.models.GroupModel;
 import org.keycloak.models.IdentityProviderMapperModel;
 import org.keycloak.models.IdentityProviderModel;
+import org.keycloak.models.IdentityProviderStorageProvider;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
+import org.keycloak.models.RoleModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.representations.JsonWebToken;
 
@@ -18,6 +22,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -48,12 +53,20 @@ class IdpGroupMapperSyncTest {
     private final List<GroupModel> topLevel = new ArrayList<>();
     private final List<GroupModel> memberships = new ArrayList<>();
 
+    private final IdentityProviderModel upstreamIdp = new IdentityProviderModel();
+
     private RealmModel realm;
     private UserModel user;
 
     @BeforeEach
     void setUp() {
+        upstreamIdp.setAlias("upstream");
+        IdentityProviderStorageProvider idps = mock(IdentityProviderStorageProvider.class);
+        when(idps.getByAlias("upstream")).thenReturn(upstreamIdp);
+        when(session.identityProviders()).thenReturn(idps);
+
         realm = mock(RealmModel.class);
+        when(realm.getName()).thenReturn("test");
         when(realm.getGroupsStream()).thenAnswer(inv -> new ArrayList<>(children.keySet()).stream());
         when(realm.getGroupById(anyString())).thenAnswer(inv -> children.keySet().stream()
                 .filter(g -> inv.getArgument(0).equals(g.getId()))
@@ -278,7 +291,78 @@ class IdpGroupMapperSyncTest {
         assertNull(find("SSO"));
     }
 
+    // ── admin role mapping (Keycloak 26.8+, CVE-2026-12388) ──────────────────
+
+    @Test
+    void adminGroupIsNotJoinedWhileIdpDisallowsAdminRoleMapping() {
+        GroupModel admins = group("realm-admins", null);
+        grantAdminRole(admins);
+        group("users", null);
+
+        sync(claim("realm-admins", "users"));
+
+        assertFalse(isMember("realm-admins"));
+        assertTrue(isMember("users"));
+    }
+
+    @Test
+    void adminGroupIsJoinedWhenIdpAllowsAdminRoleMapping() {
+        upstreamIdp.setAllowAdminRoleMapping(true);
+        GroupModel admins = group("realm-admins", null);
+        grantAdminRole(admins);
+
+        sync(claim("realm-admins"));
+
+        assertTrue(isMember("realm-admins"));
+    }
+
+    @Test
+    void adminRoleInheritedFromParentGroupAlsoBlocksJoin() {
+        GroupModel sso = group("SSO", null);
+        grantAdminRole(sso);
+        group("team", sso);
+
+        sync(claim("team"), IdpGroupMapper.TARGET_PREFIX, "/SSO");
+
+        assertFalse(isMember("SSO/team"));
+    }
+
+    @Test
+    void blockedAdminGroupKeepsExistingMembership() {
+        GroupModel sso = group("SSO", null);
+        GroupModel admins = group("admins", sso);
+        grantAdminRole(admins);
+        memberships.add(admins);
+
+        sync(claim("admins"),
+                IdpGroupMapper.TARGET_PREFIX, "/SSO",
+                IdpGroupMapper.REMOVE_NOT_LISTED, "true");
+
+        assertTrue(isMember("SSO/admins"));
+    }
+
+    @Test
+    void groupsWithoutAdminRolesNeverConsultTheIdp() {
+        group("users", null);
+
+        sync(claim("users"));
+
+        assertTrue(isMember("users"));
+        verify(session, never()).identityProviders();
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
+
+    /** Maps the realm-management role "manage-users" to the group. */
+    private static void grantAdminRole(GroupModel group) {
+        ClientModel realmManagement = mock(ClientModel.class);
+        when(realmManagement.getClientId()).thenReturn(Constants.REALM_MANAGEMENT_CLIENT_ID);
+        RoleModel role = mock(RoleModel.class);
+        when(role.getId()).thenReturn("role-manage-users");
+        when(role.getName()).thenReturn("manage-users");
+        when(role.getContainer()).thenReturn(realmManagement);
+        when(group.getRoleMappingsStream()).thenAnswer(inv -> Stream.of(role));
+    }
 
     private void sync(BrokeredIdentityContext ctx, String... configKeyValues) {
         Map<String, String> config = new HashMap<>();
@@ -287,6 +371,8 @@ class IdpGroupMapperSyncTest {
         }
         IdentityProviderMapperModel model = new IdentityProviderMapperModel();
         model.setConfig(config);
+        model.setName("groups");
+        model.setIdentityProviderAlias("upstream");
         mapper.importNewUser(session, realm, user, model, ctx);
     }
 

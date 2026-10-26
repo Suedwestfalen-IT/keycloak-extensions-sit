@@ -46,7 +46,7 @@ through the `provided` dependencies.
 ```bash
 ./run_tests.sh                              # via Docker, same .env as build_jar.sh
 ./run_tests.sh -Dtest=IdpGroupMapperTest    # single class
-mvn test -Dkeycloak.version=26.7.4          # local Maven/JDK 17+
+mvn test -Dkeycloak.version=26.8.1          # local Maven/JDK 17+
 ```
 
 `build_jar.sh` and the image build keep using `-DskipTests`; the test code is compiled there
@@ -107,6 +107,27 @@ Details:
 * The option is a text field, **not** a multivalued one: the admin console posts a multivalued
   field as a JSON array, while `IdentityProviderMapperRepresentation.config` is a
   `Map<String, String>` — saving the mapper would fail with *Cannot parse the JSON*.
+
+### Groups with administrative roles (Keycloak 26.8+)
+
+Since 1.7.0 the mapper applies the same check as Keycloak's built-in group mappers
+([CVE-2026-12388](https://github.com/keycloak/keycloak/issues/50444)): a group that carries an
+administrative role (a `realm-management` role or a composite containing one, also inherited
+from a parent group) is only **joined** when the identity provider has
+*Allow granting admin roles via mappers* (`allowAdminRoleMapping`) enabled. The setting defaults
+to `false`, also for identity providers that existed before the upgrade, and can only be changed
+by an administrator with `manage-realm`.
+
+* Blocked groups are skipped; all other groups of the claim are still synced. Keycloak logs a
+  warning naming the mapper, the identity provider and the group.
+* Existing memberships are never removed by this check (same as upstream). A blocked group that
+  is still listed in the claim is not removed by *Remove group memberships not in claim* either.
+* Groups without administrative roles — including groups created via *Create groups that do not
+  exist* — are not affected.
+
+If brokered users are meant to receive admin groups (e.g. `realm-admins`) enable the setting on
+the identity provider **before or right after** upgrading, otherwise new admins are no longer
+added — this applies to the built-in *Advanced Claim to Group* mapper as well.
 
 ---
 
@@ -457,7 +478,7 @@ instead of the passwordless variants; the overridden method is identical.
 
 ```bash
 # Build for a specific Keycloak version
-KC_VERSION=26.7.4 ./build_jar.sh
+KC_VERSION=26.8.1 ./build_jar.sh
 
 # Or via environment / .env file
 cp .env.sample .env   # edit KC_VERSION, VERSION, etc.
@@ -469,7 +490,7 @@ Output: `dist/keycloak-extensions-sit-v<VERSION>-kc<KC_VERSION>.jar`
 **Without Docker (plain Maven):**
 
 ```bash
-mvn clean package -Dkeycloak.version=26.7.4
+mvn clean package -Dkeycloak.version=26.8.1
 ```
 
 **Behind a proxy:** Copy `settings.xml.sample` to `settings.xml` and adjust the proxy host/port. `build_jar.sh` picks it up automatically if present.
@@ -498,7 +519,8 @@ RUN /opt/keycloak/bin/kc.sh build
 
 | Extension version | Keycloak |
 |---|---|
-| 1.x | ≥ 24 (tested against 26.x) |
+| 1.7.x | ≥ 26.8 (uses the IdP admin role mapping check introduced in 26.8.0) |
+| 1.0 – 1.6 | ≥ 24 (tested against 26.x up to 26.7) |
 
 Requires Java 17+.
 
@@ -538,7 +560,7 @@ rather than the container image, so the check needs no Docker and runs locally t
 
 ```bash
 ci/kc-compat/run-all.sh                 # newest release vs. pom baseline
-ci/kc-compat/run-all.sh 26.8.0 26.7.4   # explicit versions
+ci/kc-compat/run-all.sh 26.8.2 26.8.1   # explicit versions
 OLD_JAR=dist/my.jar ci/kc-compat/run-all.sh   # use the jar that is actually deployed
 ```
 

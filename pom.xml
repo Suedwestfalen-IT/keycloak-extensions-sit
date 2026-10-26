@@ -6,7 +6,7 @@
 
     <groupId>io.github.sit.keycloak</groupId>
     <artifactId>keycloak-extensions-sit</artifactId>
-    <version>1.6.0</version>
+    <version>1.7.0</version>
     <packaging>jar</packaging>
 
     <name>keycloak-extensions-sit</name>
@@ -31,7 +31,7 @@
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <!-- Override via -Dkeycloak.version=X.Y.Z or set in build_jar.sh -->
-        <keycloak.version>26.7.4</keycloak.version>
+        <keycloak.version>26.8.1</keycloak.version>
         <junit.version>6.1.3</junit.version>
         <surefire.version>3.6.0</surefire.version>
         <mockito.version>5.23.0</mockito.version>
