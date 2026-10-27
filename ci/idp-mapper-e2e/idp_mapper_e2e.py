@@ -253,21 +253,21 @@ def scenario_late(t, label, idp_mode, mapper_mode, syncs):
 
 
 def scenario_sibling(t):
-    """Prefix matching on segment boundaries (segment-wise since 1.8), FORCE, production-like config."""
+    """Prefix matching on segment boundaries (segment-wise since 1.7), FORCE, production-like config."""
     def run():
         configure(t, "IMPORT", "FORCE", {"groupPrefix": "/SSO/ORG", "targetPrefix": "/SSO/ORG",
                                          "managedPrefix": "/SSO/ORG", "createMissing": "true"})
         set_upstream_groups(t, ["/SSO/ORG/koki-user", "/SSO/ORGX/x"])
         login()
         # /SSO/ORGX/x does not match the prefix, is used unchanged below the target and created there
-        # (documented behaviour for unmatched values). Pre-1.8 it was stripped to "X/x" instead.
+        # (documented behaviour for unmatched values). Pre-1.7 it was stripped to "X/x" instead.
         expect_sync(changed=True)
         after1 = broker_groups(t)
         if after1 != ["/SSO/ORG/SSO/ORGX/x", "/SSO/ORG/koki-user"]:
             raise RuntimeError("after login 1: %s" % after1)
         mangled = api("GET", "/admin/realms/%s/group-by-path/SSO/ORG/X" % BR, token=t, expect=(200, 404))
         if isinstance(mangled, dict) and mangled.get("id"):  # a 404 also comes back as a JSON error body
-            raise RuntimeError("pre-1.8 sibling mangling: /SSO/ORG/X was created")
+            raise RuntimeError("pre-1.7 sibling mangling: /SSO/ORG/X was created")
         # a membership in the sibling organisation on the broker side is outside the managed scope
         api("PUT", "/admin/realms/%s/users/%s/groups/%s" % (BR, broker_user(t)["id"], group_id(t, BR, "/SSO/ORGX/x")), token=t)
         login()

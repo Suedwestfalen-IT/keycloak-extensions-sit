@@ -288,7 +288,7 @@ class IdpGroupMapperSyncTest {
         model.setId("mapper-" + ids.incrementAndGet()); // the warning is logged once per mapper id
         List<LogRecord> records = capture(() -> mapper.importNewUser(session, realm, user, model, claim("x")));
 
-        // pre-1.8 this joined Probe/SSO/x; now there is no root group "SSO" -> not found
+        // pre-1.7 this joined Probe/SSO/x; now there is no root group "SSO" -> not found
         assertTrue(memberships.isEmpty());
         assertNull(find("SSO"));
         verify(realm, never()).createGroup(anyString());
@@ -370,7 +370,7 @@ class IdpGroupMapperSyncTest {
         GroupModel org = group("ORG", sso);
         group("team-a", org);
 
-        // pre-1.8: joined "SSO/ORG//team-a" and removed "SSO/ORG/team-a" in the same sync
+        // pre-1.7: joined "SSO/ORG//team-a" and removed "SSO/ORG/team-a" in the same sync
         sync(claim("/SSO/ORG/team-a"),
                 IdpGroupMapper.GROUP_PREFIX, "/SSO/ORG/",
                 IdpGroupMapper.TARGET_PREFIX, "/SSO/ORG/",
@@ -393,7 +393,7 @@ class IdpGroupMapperSyncTest {
                 IdpGroupMapper.CREATE_MISSING, "true");
 
         assertTrue(isMember("SSO/ORG/team-a"));
-        // pre-1.8 "/SSO/ORGX/team-b" was stripped to "X/team-b" and SSO/ORG/X/team-b was created
+        // pre-1.7 "/SSO/ORGX/team-b" was stripped to "X/team-b" and SSO/ORG/X/team-b was created
         assertNull(find("SSO/ORG/X"));
         // the unmatched value is used unchanged below the target (documented behaviour)
         assertTrue(isMember("SSO/ORG/SSO/ORGX/team-b"));
@@ -415,7 +415,7 @@ class IdpGroupMapperSyncTest {
                 IdpGroupMapper.REMOVE_NOT_LISTED, "true");
 
         assertTrue(isMember("SSO/ORG/team-a"));
-        assertTrue(isMember("SSO/ORGX/team-b"), "pre-1.8 this was removed as 'managed'");
+        assertTrue(isMember("SSO/ORGX/team-b"), "pre-1.7 this was removed as 'managed'");
     }
 
     @Test

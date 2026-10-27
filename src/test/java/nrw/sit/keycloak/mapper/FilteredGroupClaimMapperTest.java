@@ -66,7 +66,7 @@ class FilteredGroupClaimMapperTest {
         member("/SSOX/trap");
         member("/Other/y");
 
-        // segment-wise since 1.8: "/SSO" no longer matches "/SSOX/trap"; slashes do not matter
+        // segment-wise since 1.7: "/SSO" no longer matches "/SSOX/trap"; slashes do not matter
         assertEquals(List.of("/SSO/koki/koki-user"),
                 claim("groups", FilteredGroupClaimMapper.PATH_PREFIX, "/SSO"));
         assertEquals(List.of("/SSO/koki/koki-user"),

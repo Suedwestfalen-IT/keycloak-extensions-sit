@@ -29,7 +29,7 @@ import java.util.stream.Stream;
  *  - All prefixes (strip, target, managed) are paths from the realm root and are compared
  *    segment by segment (see GroupPath): "/SSO/ORG" matches "/SSO/ORG/team", not
  *    "/SSO/ORGX/team"; leading and trailing slashes do not matter. The target prefix is
- *    resolved from the root; LEGACY_TARGET_LOOKUP restores the pre-1.8 lookup of a target
+ *    resolved from the root; LEGACY_TARGET_LOOKUP restores the pre-1.7 lookup of a target
  *    prefix without leading slash anywhere in the tree
  *  - Groups carrying administrative roles are only joined when the identity provider
  *    allows admin role mapping (Keycloak 26.8+, same check as the built-in group mappers)
@@ -56,7 +56,7 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     static final String REMOVE_NOT_LISTED = "removeNotListed";
     static final String MANAGED_PREFIX    = "managedPrefix";
     static final String CREATE_MISSING    = "createMissing";
-    /** Pre-1.8 behaviour: a target prefix without leading slash matched a group of that name anywhere. */
+    /** Pre-1.7 behaviour: a target prefix without leading slash matched a group of that name anywhere. */
     static final String LEGACY_TARGET_LOOKUP = "legacyTargetLookup";
 
     /** Splits the GROUP_PREFIX config value at comma, new line or Keycloak's '##' delimiter. */
@@ -138,8 +138,8 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         legacy.setName(LEGACY_TARGET_LOOKUP);
         legacy.setLabel("Legacy: resolve Target Group Prefix anywhere in the tree");
         legacy.setHelpText(
-            "Before 1.8 a Target Group Prefix WITHOUT leading slash (e.g. 'SSO/ORG') matched the first " +
-            "group named 'SSO' anywhere in the tree, also a nested one like /Probe/SSO. Since 1.8 the " +
+            "Before 1.7 a Target Group Prefix WITHOUT leading slash (e.g. 'SSO/ORG') matched the first " +
+            "group named 'SSO' anywhere in the tree, also a nested one like /Probe/SSO. Since 1.7 the " +
             "prefix is always resolved from the realm root. Enable this only if the old behaviour is " +
             "needed; the mapper logs a warning when the two lookups differ. Will be removed in 2.0."
         );
@@ -216,7 +216,7 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         boolean legacyLookup    = cfgBool(mapperModel, LEGACY_TARGET_LOOKUP);
 
         // The target prefix is resolved from the realm root. Only with LEGACY_TARGET_LOOKUP does a
-        // value without leading slash fall back to the pre-1.8 "first group of that name anywhere".
+        // value without leading slash fall back to the pre-1.7 "first group of that name anywhere".
         String  rawTargetPrefix         = cfg(mapperModel, TARGET_PREFIX, "");
         String  targetPrefix            = GroupPath.normalize(rawTargetPrefix);
         boolean targetPrefixAbsolute    = !legacyLookup || rawTargetPrefix.trim().startsWith("/");
@@ -303,7 +303,7 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     }
 
     /**
-     * Since 1.8 a target prefix is resolved from the realm root. Before, a prefix without leading
+     * Since 1.7 a target prefix is resolved from the realm root. Before, a prefix without leading
      * slash matched the first group of that name anywhere in the tree. When the two lookups would
      * pick different groups, say so once per mapper, so an operator sees after the upgrade which
      * mapper needs a full path (or, as a last resort, LEGACY_TARGET_LOOKUP).
@@ -317,8 +317,8 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         GroupModel root = realm.getTopLevelGroupsStream().filter(g -> first.equals(g.getName())).findFirst().orElse(null);
         GroupModel any  = realm.getGroupsStream().filter(g -> first.equals(g.getName())).findFirst().orElse(null);
         if (any != null && (root == null || !any.getId().equals(root.getId()))) {
-            LOG.warnf("IdpGroupMapper: mapper=%s idp=%s targetPrefix='%s' is resolved from the realm root since 1.8; " +
-                      "the pre-1.8 lookup would have used '%s'. Configure the full path (e.g. '/%s') or, " +
+            LOG.warnf("IdpGroupMapper: mapper=%s idp=%s targetPrefix='%s' is resolved from the realm root since 1.7; " +
+                      "the pre-1.7 lookup would have used '%s'. Configure the full path (e.g. '/%s') or, " +
                       "to keep the old behaviour, enable '%s' (removed in 2.0).",
                     mapperModel.getName(), mapperModel.getIdentityProviderAlias(), rawTargetPrefix,
                     "/" + groupPath(realm, any), targetPrefix, LEGACY_TARGET_LOOKUP);

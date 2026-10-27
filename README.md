@@ -78,12 +78,12 @@ as slash-separated paths (`org/team-a`).
 | Create groups that do not exist | `createMissing` | Auto-creates missing groups including intermediate parents. |
 | Remove group memberships not in claim | `removeNotListed` | Removes memberships that are not present in the claim, limited to the managed scope. |
 | Managed Group Prefix | `managedPrefix` | Limits removal to groups below this prefix. Ignored when `targetPrefix` is set. |
-| Legacy: resolve Target Group Prefix anywhere in the tree | `legacyTargetLookup` | Pre-1.8 lookup for a target prefix without leading slash (see *Prefixes are paths*). Off by default, removed in 2.0. |
+| Legacy: resolve Target Group Prefix anywhere in the tree | `legacyTargetLookup` | Pre-1.7 lookup for a target prefix without leading slash (see *Prefixes are paths*). Off by default, removed in 2.0. |
 
 ### Prefixes are paths, compared segment by segment
 
 All three prefixes (`groupPrefix`, `targetPrefix`, `managedPrefix`) and the *Path Prefix* of
-`sit-oidc-filtered-group-claim-mapper` are group paths from the realm root. Since 1.8 they are
+`sit-oidc-filtered-group-claim-mapper` are group paths from the realm root. Since 1.7 they are
 compared **segment by segment**, and leading, trailing or doubled slashes do not matter:
 `SSO/ORG`, `/SSO/ORG` and `/SSO/ORG/` all mean the two segments `SSO` and `ORG`.
 
@@ -91,14 +91,14 @@ compared **segment by segment**, and leading, trailing or doubled slashes do not
 |---|---|
 | `/SSO/ORG/team` | yes |
 | `/SSO/ORG` | yes (the prefix itself) |
-| `/SSO/ORGX/team` | **no** (different segment, up to 1.7 this matched) |
+| `/SSO/ORGX/team` | **no** (different segment, up to 1.6 this matched) |
 | `/Probe/SSO/ORG/team` | **no** (not from the root) |
 
 The *Target Group Prefix* is resolved from the realm root: the first segment is looked up among
-the top-level groups only. Up to 1.7 a target prefix **without** leading slash matched the first
+the top-level groups only. Up to 1.6 a target prefix **without** leading slash matched the first
 group of that name anywhere in the tree, which is not deterministic when names repeat. After the
 upgrade the mapper logs one warning per mapper whose target prefix would have resolved
-differently (`… is resolved from the realm root since 1.8; the pre-1.8 lookup would have used
+differently (`… is resolved from the realm root since 1.7; the pre-1.7 lookup would have used
 '/Probe/SSO'`). Fix the configuration (full path) or, as a last resort, enable *Legacy: resolve
 Target Group Prefix anywhere in the tree*; that option is removed in 2.0.
 
@@ -131,10 +131,10 @@ release adds is deliberately **not** claimed until its semantics have been check
 logs its "does not explicitly support sync mode" warning, and the unit test
 `everyKeycloakSyncModeHasBeenReviewed` fails on the new release.
 
-> Up to 1.7.0 the mapper also implemented `preprocessFederatedIdentity` as a "fallback" sync on
+> Up to 1.6.x the mapper also implemented `preprocessFederatedIdentity` as a "fallback" sync on
 > every login. It looked the user up by `BrokeredIdentityContext#getBrokerUserId()`
 > (`<alias>.<sub>`), while Keycloak stores the plain `sub` in the federated identity link, so the
-> lookup never found a user and the method never did anything. 1.7.1 removes it; the behaviour is
+> lookup never found a user and the method never did anything. 1.7.0 removes it; the behaviour is
 > unchanged (verified with the e2e test against the old and the new jar).
 
 ### Logging
@@ -606,32 +606,43 @@ RUN /opt/keycloak/bin/kc.sh build
 
 ## Changelog
 
-### 1.8.0
+### 1.7.0
 
-Behaviour changes in the group mappers (`sit-oidc-group-idp-mapper`,
-`sit-oidc-filtered-group-claim-mapper`), see *Prefixes are paths, compared segment by segment*:
+First release after 1.6.0. **Requires Keycloak 26.8 or newer.**
 
+Group mappers (`sit-oidc-group-idp-mapper`, `sit-oidc-filtered-group-claim-mapper`):
+
+* **Admin groups follow the identity provider's *Allow granting admin roles via mappers* setting**
+  (Keycloak 26.8, CVE-2026-12388), see *Groups with administrative roles*. Enable the setting on
+  identity providers whose users are meant to receive admin groups, otherwise those joins are
+  skipped (and logged) after the upgrade.
 * **Prefixes match whole path segments.** `/SSO/ORG` no longer matches `/SSO/ORGX/team`. Up to
-  1.7 a sibling group whose name started with the same characters was stripped into the target
+  1.6 a sibling group whose name started with the same characters was stripped into the target
   (and created there with *Create groups that do not exist*), counted as managed for removal,
   and emitted by the claim mapper's path filter. Affected: configurations where one prefix is a
-  character-wise prefix of another group name.
-* **Target Group Prefix is resolved from the realm root.** Up to 1.7 a value without leading
+  character-wise prefix of another group name. See *Prefixes are paths*.
+* **Target Group Prefix is resolved from the realm root.** Up to 1.6 a value without leading
   slash matched the first group of that name anywhere in the tree. The mapper now logs a warning
   per mapper where the two lookups differ; `legacyTargetLookup` restores the old lookup until 2.0.
   Affected: target prefixes without leading slash whose first segment also exists as a nested
   group.
-* **Trailing slash on the Target Group Prefix.** Up to 1.7 `/SSO/ORG/` built the path
+* **Trailing slash on the Target Group Prefix.** Up to 1.6 `/SSO/ORG/` built the path
   `SSO/ORG//team`, which *Remove group memberships not in claim* then removed again in the same
   sync, leaving the user without the group. Slashes are now normalised.
+* **Sync mode Force is supported explicitly** (no more "does not explicitly support sync mode"
+  warning on every login); the dead `preprocessFederatedIdentity` fallback is removed, see
+  *Sync mode: use Force*.
+* **One summary log line per sync**: WARN when claimed groups could not be resolved, INFO when
+  memberships changed, DEBUG otherwise. Per-group details on DEBUG. See *Logging*.
 
-Unit tests and `ci/idp-mapper-e2e` cover the new behaviour (`sibling` scenario).
+CI: end-to-end tests against the real Keycloak distribution for the login form
+(`ci/login-e2e`) and the group mapper (`ci/idp-mapper-e2e`, every sync mode plus the `sibling`
+scenario), shared helpers in `ci/lib/`.
 
 ## Compatibility
 
 | Extension version | Keycloak |
 |---|---|
-| 1.8.x | ≥ 26.8 |
 | 1.7.x | ≥ 26.8 (uses the IdP admin role mapping check introduced in 26.8.0) |
 | 1.0 – 1.6 | ≥ 24 (tested against 26.x up to 26.7) |
 
