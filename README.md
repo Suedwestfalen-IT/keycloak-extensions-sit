@@ -76,6 +76,55 @@ as slash-separated paths (`org/team-a`).
 | Remove group memberships not in claim | `removeNotListed` | Removes memberships that are not present in the claim, limited to the managed scope. |
 | Managed Group Prefix | `managedPrefix` | Limits removal to groups below this prefix. Ignored when `targetPrefix` is set. |
 
+### Sync mode: use **Force**
+
+The mapper follows Keycloak's sync mode (*Sync mode override* on the mapper, or the identity
+provider's *Sync mode* when the override is *Inherit*):
+
+| Effective sync mode | First login (user created) | Every further login |
+|---|---|---|
+| **Force** (recommended) | synced | synced |
+| Legacy | synced | synced |
+| Import | synced | **not touched** |
+
+With **Import** the memberships are only set when the brokered user is created. A group that the
+upstream IdP assigns later (e.g. by a nightly AD sync, after the user's first login) or removes
+later is never picked up. Use **Force** so that every login reflects the current claim.
+
+Also with *Import*: when the first broker login links an already existing local account instead
+of creating one, Keycloak does not call the mapper's import step, so that user gets no groups at
+all.
+
+`ci/idp-mapper-e2e/run.sh` (workflow `idp-mapper-e2e.yml`) plays this against the real Keycloak
+distribution, which brokers itself: for every sync mode a first login, a group change upstream and
+a group assigned only after the first login.
+
+> Up to 1.6.x the mapper also implemented `preprocessFederatedIdentity` as a "fallback" sync on
+> every login. It looked the user up by `BrokeredIdentityContext#getBrokerUserId()`
+> (`<alias>.<sub>`), while Keycloak stores the plain `sub` in the federated identity link, so the
+> lookup never found a user and the method never did anything. 1.7.0 removes it; the behaviour is
+> unchanged (verified with the e2e test against the old and the new jar).
+
+### Logging
+
+Each sync writes **one** line, INFO, or WARN when claimed groups could not be resolved:
+
+```
+IdpGroupMapper: user=m.wegmann@hemer.de idp=sit-sso mapper=sso-groups added=[SSO/HEME/koki-user] removed=[] skipped=[] notFound=[] created=[]
+```
+
+| Field | Meaning |
+|---|---|
+| `added` / `removed` | memberships joined / left in this sync |
+| `skipped` | groups with admin roles not joined because the IdP does not allow admin role mapping |
+| `notFound` | claimed groups that do not exist here and were not created (`createMissing` off) – the line is WARN then |
+| `created` | groups created on the way (`createMissing` on) |
+
+No line at all for a login means the mapper did not run a sync (e.g. sync mode *Import* on a
+further login). Group changes made by mappers do not create admin events in Keycloak (neither
+for this mapper nor for the built-in ones), so the server log is the place to look. Details per
+group are logged on DEBUG (`--log-level=nrw.sit.keycloak.mapper:debug`).
+
 ### Stripping multiple prefixes
 
 Upstream IdPs often keep the relevant groups below **several** top-level groups. To merge them
@@ -544,6 +593,7 @@ explicit versions) to check it again.
 | Start Keycloak with the **rebuilt** jar | same as above |
 | Kerberos e2e (`ci/kerberos-e2e`) with the rebuilt jar | the on-demand Kerberos login no longer works as expected (flow-engine behaviour changed) |
 | Login e2e (`ci/login-e2e`) with the rebuilt jar | `sit-auth-username-password-form` no longer behaves like the built-in form |
+| IdP mapper e2e (`ci/idp-mapper-e2e`) with the rebuilt jar | `sit-oidc-group-idp-mapper` no longer syncs according to the sync mode |
 
 For every changed Keycloak class the report shows which of our classes are affected (including the
 inheritance chain), the API changes as Java signatures, the source diff and the upstream commits

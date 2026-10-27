@@ -10,6 +10,7 @@ import org.keycloak.models.GroupModel;
 import org.keycloak.models.IdentityProviderMapperModel;
 import org.keycloak.models.IdentityProviderModel;
 import org.keycloak.models.IdentityProviderStorageProvider;
+import org.keycloak.models.IdentityProviderSyncMode;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.RoleModel;
@@ -34,6 +35,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -351,6 +353,40 @@ class IdpGroupMapperSyncTest {
         verify(session, never()).identityProviders();
     }
 
+    // ── sync modes ───────────────────────────────────────────────────────────
+
+    @Test
+    void supportsAllSyncModesIncludingForce() {
+        for (IdentityProviderSyncMode mode : IdentityProviderSyncMode.values()) {
+            assertTrue(mapper.supportsSyncMode(mode), mode.name());
+        }
+    }
+
+    @Test
+    void updateBrokeredUserSyncsLikeImportNewUser() {
+        GroupModel kc2 = group("KC2", null);
+        GroupModel old = group("old", kc2);
+        group("new", kc2);
+        memberships.add(old);
+
+        IdentityProviderMapperModel model = model(IdpGroupMapper.TARGET_PREFIX, "KC2",
+                IdpGroupMapper.REMOVE_NOT_LISTED, "true");
+        mapper.updateBrokeredUser(session, realm, user, model, claim("new"));
+
+        assertTrue(isMember("KC2/new"));
+        assertFalse(isMember("KC2/old"));
+    }
+
+    @Test
+    void preprocessFederatedIdentityDoesNothing() {
+        // the inherited no-op: groups are only synced via importNewUser / updateBrokeredUser
+        group("users", null);
+        IdentityProviderMapperModel model = model();
+        mapper.preprocessFederatedIdentity(session, realm, model, claim("users"));
+
+        verifyNoInteractions(session, realm, user);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     /** Maps the realm-management role "manage-users" to the group. */
@@ -365,6 +401,10 @@ class IdpGroupMapperSyncTest {
     }
 
     private void sync(BrokeredIdentityContext ctx, String... configKeyValues) {
+        mapper.importNewUser(session, realm, user, model(configKeyValues), ctx);
+    }
+
+    private static IdentityProviderMapperModel model(String... configKeyValues) {
         Map<String, String> config = new HashMap<>();
         for (int i = 0; i < configKeyValues.length; i += 2) {
             config.put(configKeyValues[i], configKeyValues[i + 1]);
@@ -373,7 +413,7 @@ class IdpGroupMapperSyncTest {
         model.setConfig(config);
         model.setName("groups");
         model.setIdentityProviderAlias("upstream");
-        mapper.importNewUser(session, realm, user, model, ctx);
+        return model;
     }
 
     /** Builds a brokered context whose validated ID token carries the given "groups" claim. */

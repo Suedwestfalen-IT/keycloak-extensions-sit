@@ -29,6 +29,13 @@ import java.util.stream.Collectors;
  *    preventing accidental matches against same-named sub-groups
  *  - Groups carrying administrative roles are only joined when the identity provider
  *    allows admin role mapping (Keycloak 26.8+, same check as the built-in group mappers)
+ *
+ * Sync modes: the groups are synced on the first login (importNewUser) and, with sync mode
+ * FORCE or LEGACY, on every further login (updateBrokeredUser). With IMPORT later logins do
+ * not touch the memberships.
+ *
+ * Logging: one INFO line per sync ("IdpGroupMapper: user=... added=[...] removed=[...] ..."),
+ * WARN instead when claimed groups could not be resolved. Per-group details are DEBUG.
  */
 public class IdpGroupMapper extends AbstractClaimMapper {
 
@@ -125,6 +132,17 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     @Override public List<ProviderConfigProperty> getConfigProperties() { return CONFIG_PROPERTIES; }
     @Override public String[] getCompatibleProviders() { return new String[]{ "oidc" }; }
 
+    /**
+     * IMPORT and LEGACY (Keycloak's default set) plus FORCE, which updateBrokeredUser fully supports.
+     * Without FORCE here Keycloak logs a "does not explicitly support sync mode FORCE" warning on
+     * every login, although it calls updateBrokeredUser anyway.
+     */
+    @Override
+    public boolean supportsSyncMode(IdentityProviderSyncMode syncMode) {
+        return syncMode == IdentityProviderSyncMode.FORCE
+                || DEFAULT_IDENTITY_PROVIDER_MAPPER_SYNC_MODES.contains(syncMode);
+    }
+
 
     // ── Entry points ─────────────────────────────────────────────────────────
 
@@ -135,33 +153,13 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         syncGroups(session, realm, user, mapperModel, context);
     }
 
-    /** Called on subsequent logins when sync mode is FORCE. */
+    /**
+     * Called on further logins when the effective sync mode is FORCE, and via
+     * updateBrokeredUserLegacy when it is LEGACY. Not called with IMPORT.
+     */
     @Override
     public void updateBrokeredUser(KeycloakSession session, RealmModel realm, UserModel user,
                                    IdentityProviderMapperModel mapperModel, BrokeredIdentityContext context) {
-        syncGroups(session, realm, user, mapperModel, context);
-    }
-
-    /**
-     * Called on every login regardless of sync mode – before importNewUser/updateBrokeredUser.
-     * Used as reliable fallback for FORCE sync when updateBrokeredUser is not triggered.
-     * The federated user is looked up via the brokered identity.
-     */
-    @Override
-    public void preprocessFederatedIdentity(KeycloakSession session, RealmModel realm,
-                                            IdentityProviderMapperModel mapperModel,
-                                            BrokeredIdentityContext context) {
-        String brokerUserId = context.getBrokerUserId();
-        if (brokerUserId == null) return;
-
-        UserModel user = session.users().getUserByFederatedIdentity(realm,
-                new org.keycloak.models.FederatedIdentityModel(
-                        context.getIdpConfig().getAlias(),
-                        context.getBrokerUserId(),
-                        context.getUsername()));
-
-        if (user == null) return; // new user – importNewUser will handle it
-
         syncGroups(session, realm, user, mapperModel, context);
     }
 
@@ -187,10 +185,16 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         String effectiveScope = !targetPrefix.isEmpty() ? targetPrefix : managedPrefix;
 
         Set<String> claimedRaw = extractGroupsFromClaim(context, claimName, prefixes);
-        LOG.debugf("IdpGroupMapper: user=%s prefixes=%s claimedRaw=%s targetPrefix=%s (absolute=%b)",
-                user.getUsername(), prefixes, claimedRaw, targetPrefix, targetPrefixAbsolute);
-        LOG.infof("IdpGroupMapper: syncGroups removeNotListed=%b createMissing=%b effectiveScope='%s'",
+        LOG.debugf("IdpGroupMapper: user=%s prefixes=%s claimedRaw=%s targetPrefix=%s (absolute=%b) " +
+                        "removeNotListed=%b createMissing=%b effectiveScope='%s'",
+                user.getUsername(), prefixes, claimedRaw, targetPrefix, targetPrefixAbsolute,
                 removeNotListed, createMissing, effectiveScope);
+
+        List<String> added    = new ArrayList<>();
+        List<String> removed  = new ArrayList<>();
+        List<String> skipped  = new ArrayList<>();
+        List<String> notFound = new ArrayList<>();
+        List<String> created  = new ArrayList<>();
 
         // Build full paths including targetPrefix, e.g. "KC2/koki/koki-user"
         Set<String> claimedFull = new java.util.LinkedHashSet<>();
@@ -200,38 +204,50 @@ public class IdpGroupMapper extends AbstractClaimMapper {
 
         // Add
         for (String fullPath : claimedFull) {
-            GroupModel group = resolveGroup(realm, fullPath, createMissing, targetPrefixAbsolute);
-            if (group != null && !user.isMemberOf(group)) {
+            GroupModel group = resolveGroup(realm, fullPath, createMissing, targetPrefixAbsolute, created);
+            if (group == null) {
+                notFound.add(fullPath);
+                continue;
+            }
+            if (!user.isMemberOf(group)) {
                 // Keycloak 26.8+ (CVE-2026-12388): groups granting admin roles require the IdP
                 // option "allowAdminRoleMapping"; Keycloak logs the denial itself.
                 // Only joining is guarded, existing memberships are left alone like upstream.
                 if (!isAdminGroupJoinAllowed(session, realm, group, mapperModel)) {
-                    LOG.infof("IdpGroupMapper: skipped admin group '%s' for '%s'", fullPath, user.getUsername());
+                    skipped.add(fullPath);
                     continue;
                 }
                 user.joinGroup(group);
-                LOG.infof("IdpGroupMapper: added '%s' → group '%s'", user.getUsername(), fullPath);
+                added.add(fullPath);
             }
         }
 
         // Remove (only within managed scope)
         if (removeNotListed) {
             List<GroupModel> currentGroups = user.getGroupsStream().collect(Collectors.toList());
-            LOG.infof("IdpGroupMapper: currentGroups=%s",
-                    currentGroups.stream().map(g -> groupPath(realm, g)).collect(Collectors.toList()));
-            LOG.infof("IdpGroupMapper: claimedFull=%s", claimedFull);
-            LOG.infof("IdpGroupMapper: effectiveScope='%s'", effectiveScope);
+            LOG.debugf("IdpGroupMapper: user=%s currentGroups=%s claimedFull=%s", user.getUsername(),
+                    currentGroups.stream().map(g -> groupPath(realm, g)).collect(Collectors.toList()), claimedFull);
 
             for (GroupModel g : currentGroups) {
                 String path = groupPath(realm, g);
                 boolean managed = isManagedGroup(realm, g, effectiveScope);
                 boolean inClaim = claimedFull.contains(path);
-                LOG.infof("IdpGroupMapper: group='%s' managed=%b inClaim=%b", path, managed, inClaim);
+                LOG.debugf("IdpGroupMapper: group='%s' managed=%b inClaim=%b", path, managed, inClaim);
                 if (managed && !inClaim) {
                     user.leaveGroup(g);
-                    LOG.infof("IdpGroupMapper: removed '%s' from group '%s'", user.getUsername(), path);
+                    removed.add(path);
                 }
             }
+        }
+
+        // One line per sync; WARN when claimed groups could not be resolved (config problem)
+        String idp = context.getIdpConfig() != null ? context.getIdpConfig().getAlias() : mapperModel.getIdentityProviderAlias();
+        String summary = String.format("IdpGroupMapper: user=%s idp=%s mapper=%s added=%s removed=%s skipped=%s notFound=%s created=%s",
+                user.getUsername(), idp, mapperModel.getName(), added, removed, skipped, notFound, created);
+        if (notFound.isEmpty()) {
+            LOG.info(summary);
+        } else {
+            LOG.warn(summary);
         }
     }
 
@@ -245,26 +261,26 @@ public class IdpGroupMapper extends AbstractClaimMapper {
      * @param rootOnly if true, the first path segment is matched exclusively
      *                 against top-level groups (parentId == null), preventing
      *                 accidental matches against same-named sub-groups.
+     * @param created  collects the paths of groups created on the way
      */
-    private GroupModel resolveGroup(RealmModel realm, String path, boolean createMissing, boolean rootOnly) {
+    private GroupModel resolveGroup(RealmModel realm, String path, boolean createMissing, boolean rootOnly,
+                                    List<String> created) {
         String[] segments = path.split("/");
         GroupModel current = null;
 
+        StringBuilder walked = new StringBuilder();
         for (String segment : segments) {
             if (segment.isBlank()) continue;
+            if (walked.length() > 0) walked.append('/');
+            walked.append(segment);
             if (current == null) {
-                current = findTopLevel(realm, segment, createMissing, rootOnly);
+                current = findTopLevel(realm, segment, createMissing, rootOnly, walked, created);
             } else {
-                current = findChild(realm, current, segment, createMissing);
+                current = findChild(realm, current, segment, createMissing, walked, created);
             }
             if (current == null) return null; // not found and not created
         }
         return current;
-    }
-
-    /** Convenience overload — defaults to rootOnly=true (safe default). */
-    private GroupModel resolveGroup(RealmModel realm, String path, boolean createMissing) {
-        return resolveGroup(realm, path, createMissing, true);
     }
 
     /**
@@ -273,34 +289,36 @@ public class IdpGroupMapper extends AbstractClaimMapper {
      * @param rootOnly if true, only groups with parentId == null are considered,
      *                 preventing false matches against sub-groups with the same name.
      */
-    private GroupModel findTopLevel(RealmModel realm, String name, boolean createMissing, boolean rootOnly) {
+    private GroupModel findTopLevel(RealmModel realm, String name, boolean createMissing, boolean rootOnly,
+                                    CharSequence path, List<String> created) {
         Optional<GroupModel> found = realm.getGroupsStream()
                 .filter(g -> !rootOnly || g.getParentId() == null)
                 .filter(g -> name.equals(g.getName()))
                 .findFirst();
         if (found.isPresent()) return found.get();
         if (!createMissing) {
-            LOG.warnf("IdpGroupMapper: top-level group '%s' not found (rootOnly=%b), createMissing=false",
+            LOG.debugf("IdpGroupMapper: top-level group '%s' not found (rootOnly=%b), createMissing=false",
                     name, rootOnly);
             return null;
         }
         GroupModel g = realm.createGroup(name);
-        LOG.infof("IdpGroupMapper: created top-level group '%s'", name);
+        created.add(path.toString());
         return g;
     }
 
-    private GroupModel findChild(RealmModel realm, GroupModel parent, String name, boolean createMissing) {
+    private GroupModel findChild(RealmModel realm, GroupModel parent, String name, boolean createMissing,
+                                 CharSequence path, List<String> created) {
         Optional<GroupModel> found = parent.getSubGroupsStream()
                 .filter(g -> name.equals(g.getName()))
                 .findFirst();
         if (found.isPresent()) return found.get();
         if (!createMissing) {
-            LOG.warnf("IdpGroupMapper: child group '%s' under '%s' not found, createMissing=false",
+            LOG.debugf("IdpGroupMapper: child group '%s' under '%s' not found, createMissing=false",
                     name, parent.getName());
             return null;
         }
         GroupModel g = realm.createGroup(name, parent);
-        LOG.infof("IdpGroupMapper: created child group '%s' under '%s'", name, parent.getName());
+        created.add(path.toString());
         return g;
     }
 

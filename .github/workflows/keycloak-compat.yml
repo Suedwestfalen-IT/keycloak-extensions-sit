@@ -4,7 +4,8 @@
 # than keycloak.version in pom.xml and there is no issue for it yet, ci/kc-compat/run-all.sh
 # runs (build, tests, bytecode/API/dependency comparison, Keycloak start with the old and the
 # rebuilt jar), followed by the Kerberos end-to-end test (ci/kerberos-e2e) against the new
-# release and the login end-to-end test (ci/login-e2e), and the result is filed as an issue.
+# release, the login end-to-end test (ci/login-e2e) and the IdP group mapper end-to-end test
+# (ci/idp-mapper-e2e), and the result is filed as an issue.
 # The Kerberos test matters most: the on-demand Kerberos authenticator relies on flow-engine
 # behaviour that a release could change.
 #
@@ -133,11 +134,22 @@ jobs:
           mkdir -p "$WORK_DIR"
           WORK_DIR="$GITHUB_WORKSPACE/.login-e2e" ci/login-e2e/run.sh "$NEW" "$jar" 2>&1 | tee "$WORK_DIR/login-e2e.log"
 
+      - name: IdP mapper e2e against Keycloak ${{ needs.detect.outputs.version }}
+        id: idpmapper
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          jar="$WORK_DIR/jars/new.jar"; [ -f "$jar" ] || jar="$WORK_DIR/jars/old.jar"
+          if [ ! -f "$jar" ]; then echo "no jar from the compatibility check"; exit 1; fi
+          mkdir -p "$WORK_DIR"
+          WORK_DIR="$GITHUB_WORKSPACE/.idp-mapper-e2e" ci/idp-mapper-e2e/run.sh "$NEW" "$jar" 2>&1 | tee "$WORK_DIR/idp-mapper-e2e.log"
+
       - name: Add the e2e tests to the report
         if: always()
         env:
           OUTCOME: ${{ steps.kerberos.outcome }}
           LOGIN_OUTCOME: ${{ steps.login.outcome }}
+          IDPMAPPER_OUTCOME: ${{ steps.idpmapper.outcome }}
         run: |
           section="$RUNNER_TEMP/kerberos.md"
           {
@@ -156,6 +168,14 @@ jobs:
             echo
             echo '```'
             cat .login-e2e/e2e.out 2>/dev/null || tail -n 40 "$WORK_DIR/login-e2e.log" 2>/dev/null || echo "no output"
+            echo '```'
+            echo
+            echo "## IdP mapper e2e (sit-oidc-group-idp-mapper)"
+            echo
+            if [ "$IDPMAPPER_OUTCOME" = "success" ]; then echo "Result: **PASS**"; else echo "Result: **FAIL** ($IDPMAPPER_OUTCOME)"; fi
+            echo
+            echo '```'
+            cat .idp-mapper-e2e/e2e.out 2>/dev/null || tail -n 40 "$WORK_DIR/idp-mapper-e2e.log" 2>/dev/null || echo "no output"
             echo '```'
           } > "$section"
           mkdir -p "$WORK_DIR"
@@ -188,6 +208,9 @@ jobs:
             .kc-compat/login-e2e.log
             .login-e2e/e2e.out
             .login-e2e/keycloak.log
+            .kc-compat/idp-mapper-e2e.log
+            .idp-mapper-e2e/e2e.out
+            .idp-mapper-e2e/keycloak.log
           include-hidden-files: true   # .kc-compat/ starts with a dot
           if-no-files-found: warn
           retention-days: 90

@@ -10,3 +10,4 @@ settings.xml
 __pycache__/
 .login-e2e/
 .kerberos-e2e/
+.idp-mapper-e2e/
