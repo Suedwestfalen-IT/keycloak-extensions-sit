@@ -119,7 +119,7 @@ logs its "does not explicitly support sync mode" warning, and the unit test
 Each sync writes **one** summary line:
 
 ```
-IdpGroupMapper: user=m.wegmann@hemer.de idp=sit-sso mapper=sso-groups added=[SSO/HEME/koki-user] removed=[] skipped=[] notFound=[] created=[]
+IdpGroupMapper: user=jane.doe@example.org idp=upstream mapper=sso-groups added=[SSO/ORG/team-a] removed=[] skipped=[] notFound=[] created=[]
 ```
 
 | Level | When |

@@ -214,7 +214,7 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         }
 
         // Add. Groups resolved in this sync are remembered by path, so a parent shared by several
-        // claimed groups (e.g. "SSO/SIT" for every "SSO/SIT/<team>") is looked up only once.
+        // claimed groups (e.g. "SSO/ORG" for every "SSO/ORG/<team>") is looked up only once.
         Map<String, GroupModel> resolved = new HashMap<>();
         for (String fullPath : claimedFull) {
             GroupModel group = resolveGroup(realm, fullPath, createMissing, targetPrefixAbsolute, created, resolved);

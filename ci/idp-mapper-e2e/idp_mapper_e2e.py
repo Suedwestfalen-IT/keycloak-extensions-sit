@@ -8,7 +8,7 @@ Every login is played with curl through the real broker endpoints.
 
 For each sync mode of the mapper the same story runs twice:
 
-  update   login 1 with /SSO/HEME/koki-user, move alice upstream to koki-admin, login 2
+  update   login 1 with /SSO/ORG/koki-user, move alice upstream to koki-admin, login 2
   late     login 1 without any group, add koki-user upstream, login 2
            (a user who logged in before the group was assigned upstream)
 
@@ -48,7 +48,7 @@ APP_REDIRECT = BASE + "/app/callback"
 BROKER_CLIENT = "broker-client"
 BROKER_SECRET = "broker-secret"
 MAPPER = "sit-oidc-group-idp-mapper"
-GROUPS = ("/SSO/HEME/koki-user", "/SSO/HEME/koki-admin")
+GROUPS = ("/SSO/ORG/koki-user", "/SSO/ORG/koki-admin")
 
 # ── setup ───────────────────────────────────────────────────────────────────
 
@@ -124,7 +124,7 @@ def configure(t, idp_sync_mode, mapper_sync_mode):
         "name": "sso-groups", "identityProviderAlias": IDP_ALIAS, "identityProviderMapper": MAPPER,
         "config": {"syncMode": mapper_sync_mode, "claim": "sso-groups", "groupPrefix": "",
                    "targetPrefix": "", "createMissing": "false", "removeNotListed": "true",
-                   "managedPrefix": "/SSO/HEME"}}, token=t)
+                   "managedPrefix": "/SSO/ORG"}}, token=t)
     for u in api("GET", r + "/users?username=alice&exact=true", token=t):
         api("DELETE", r + "/users/" + u["id"], token=t)
     set_upstream_groups(t, [])
@@ -206,18 +206,18 @@ MODES = [
 def scenario_update(t, label, idp_mode, mapper_mode, syncs):
     def run():
         configure(t, idp_mode, mapper_mode)
-        set_upstream_groups(t, ["/SSO/HEME/koki-user"])
+        set_upstream_groups(t, ["/SSO/ORG/koki-user"])
         login()
         expect_sync(changed=True)  # joined koki-user
         after1 = broker_groups(t)
-        if after1 != ["/SSO/HEME/koki-user"]:
+        if after1 != ["/SSO/ORG/koki-user"]:
             raise RuntimeError("after login 1: %s" % after1)
-        set_upstream_groups(t, ["/SSO/HEME/koki-admin"])
+        set_upstream_groups(t, ["/SSO/ORG/koki-admin"])
         login()
         if syncs:
             expect_sync(changed=True)  # joined koki-admin, left koki-user
         after2 = broker_groups(t)
-        want = ["/SSO/HEME/koki-admin"] if syncs else ["/SSO/HEME/koki-user"]
+        want = ["/SSO/ORG/koki-admin"] if syncs else ["/SSO/ORG/koki-user"]
         if after2 != want:
             raise RuntimeError("after login 2: %s, expected %s" % (after2, want))
         return "login1=%s login2=%s" % (after1, after2)
@@ -232,12 +232,12 @@ def scenario_late(t, label, idp_mode, mapper_mode, syncs):
         after1 = broker_groups(t)
         if after1:
             raise RuntimeError("after login 1: %s" % after1)
-        set_upstream_groups(t, ["/SSO/HEME/koki-user"])
+        set_upstream_groups(t, ["/SSO/ORG/koki-user"])
         login()
         if syncs:
             expect_sync(changed=True)  # joined koki-user
         after2 = broker_groups(t)
-        want = ["/SSO/HEME/koki-user"] if syncs else []
+        want = ["/SSO/ORG/koki-user"] if syncs else []
         if after2 != want:
             raise RuntimeError("after login 2: %s, expected %s" % (after2, want))
         return "login1=%s login2=%s" % (after1, after2)

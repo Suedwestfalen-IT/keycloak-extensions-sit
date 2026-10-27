@@ -383,22 +383,22 @@ class IdpGroupMapperSyncTest {
     @Test
     void sharedParentsAreResolvedOncePerSync() {
         GroupModel sso = group("SSO", null);
-        GroupModel sit = group("SIT", sso);
-        group("koki-user", sit);
-        group("koki-premium", sit);
-        group("sitcloud-user", sit);
+        GroupModel org = group("ORG", sso);
+        group("team-a", org);
+        group("team-b", org);
+        group("team-c", org);
 
-        sync(claim("/SSO/SIT/koki-user", "/SSO/SIT/koki-premium", "/SSO/SIT/sitcloud-user"),
-                IdpGroupMapper.GROUP_PREFIX, "/SSO/SIT",
-                IdpGroupMapper.TARGET_PREFIX, "/SSO/SIT");
+        sync(claim("/SSO/ORG/team-a", "/SSO/ORG/team-b", "/SSO/ORG/team-c"),
+                IdpGroupMapper.GROUP_PREFIX, "/SSO/ORG",
+                IdpGroupMapper.TARGET_PREFIX, "/SSO/ORG");
 
-        assertTrue(isMember("SSO/SIT/koki-user"));
-        assertTrue(isMember("SSO/SIT/koki-premium"));
-        assertTrue(isMember("SSO/SIT/sitcloud-user"));
-        // "SSO" and "SSO/SIT" are shared by all three claimed groups: one lookup each, not three
+        assertTrue(isMember("SSO/ORG/team-a"));
+        assertTrue(isMember("SSO/ORG/team-b"));
+        assertTrue(isMember("SSO/ORG/team-c"));
+        // "SSO" and "SSO/ORG" are shared by all three claimed groups: one lookup each, not three
         verify(realm, times(1)).getTopLevelGroupsStream();
         verify(sso, times(1)).getSubGroupsStream();
-        verify(sit, times(3)).getSubGroupsStream();
+        verify(org, times(3)).getSubGroupsStream();
         verify(realm, never()).getGroupsStream();
     }
 
