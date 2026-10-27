@@ -74,10 +74,33 @@ as slash-separated paths (`org/team-a`).
 |---|---|---|
 | Groups Claim Name | `claim` | JWT claim holding the list of groups. Default `groups`. |
 | Group Path Prefixes to Strip | `groupPrefix` | One or more prefixes removed from every claim value before matching (see below). |
-| Target Group Prefix | `targetPrefix` | Groups are placed below this group. A leading `/` matches the first segment at root level only. Also scopes the removal. |
+| Target Group Prefix | `targetPrefix` | Groups are placed below this path, resolved from the realm root. Also scopes the removal. |
 | Create groups that do not exist | `createMissing` | Auto-creates missing groups including intermediate parents. |
 | Remove group memberships not in claim | `removeNotListed` | Removes memberships that are not present in the claim, limited to the managed scope. |
 | Managed Group Prefix | `managedPrefix` | Limits removal to groups below this prefix. Ignored when `targetPrefix` is set. |
+| Legacy: resolve Target Group Prefix anywhere in the tree | `legacyTargetLookup` | Pre-1.8 lookup for a target prefix without leading slash (see *Prefixes are paths*). Off by default, removed in 2.0. |
+
+### Prefixes are paths, compared segment by segment
+
+All three prefixes (`groupPrefix`, `targetPrefix`, `managedPrefix`) and the *Path Prefix* of
+`sit-oidc-filtered-group-claim-mapper` are group paths from the realm root. Since 1.8 they are
+compared **segment by segment**, and leading, trailing or doubled slashes do not matter:
+`SSO/ORG`, `/SSO/ORG` and `/SSO/ORG/` all mean the two segments `SSO` and `ORG`.
+
+| Prefix `/SSO/ORG` and … | matches? |
+|---|---|
+| `/SSO/ORG/team` | yes |
+| `/SSO/ORG` | yes (the prefix itself) |
+| `/SSO/ORGX/team` | **no** (different segment, up to 1.7 this matched) |
+| `/Probe/SSO/ORG/team` | **no** (not from the root) |
+
+The *Target Group Prefix* is resolved from the realm root: the first segment is looked up among
+the top-level groups only. Up to 1.7 a target prefix **without** leading slash matched the first
+group of that name anywhere in the tree, which is not deterministic when names repeat. After the
+upgrade the mapper logs one warning per mapper whose target prefix would have resolved
+differently (`… is resolved from the realm root since 1.8; the pre-1.8 lookup would have used
+'/Probe/SSO'`). Fix the configuration (full path) or, as a last resort, enable *Legacy: resolve
+Target Group Prefix anywhere in the tree*; that option is removed in 2.0.
 
 ### Sync mode: use **Force**
 
@@ -159,13 +182,14 @@ Details:
 
 * The **longest matching prefix wins**, so `/PartnerA` and `/PartnerAB` can be configured side
   by side regardless of their order.
-* Claim values matching **none** of the prefixes are used unchanged (only leading slashes are
-  removed), so the mapper never silently drops groups.
+* Claim values matching **none** of the prefixes are used unchanged (only leading and trailing
+  slashes are removed), so the mapper never silently drops groups. With a target prefix such a
+  value ends up below the target, e.g. `/Other/y` → `KC2/Other/y`.
 * A claim value that **equals** a prefix (e.g. `/PartnerA` itself, often sent when the user is a
   direct member of the parent group) strips to an empty string and is ignored, so the user is
   never added to the target group itself.
-* A prefix is matched as a plain string prefix, not segment-wise — `/SSO` also matches
-  `/SSOX/a`. Use the full path segment (`/SSO`) to avoid surprises.
+* Prefixes match whole path segments: `/SSO` matches `/SSO/a` but not `/SSOX/a` (see *Prefixes
+  are paths* above).
 * Besides the new line, a comma and Keycloak's `##` delimiter are accepted as separators, so
   the mapper can also be configured via the admin REST API or a realm import. A previously
   configured single value keeps working unchanged.
@@ -580,10 +604,34 @@ RUN /opt/keycloak/bin/kc.sh build
 
 ---
 
+## Changelog
+
+### 1.8.0
+
+Behaviour changes in the group mappers (`sit-oidc-group-idp-mapper`,
+`sit-oidc-filtered-group-claim-mapper`), see *Prefixes are paths, compared segment by segment*:
+
+* **Prefixes match whole path segments.** `/SSO/ORG` no longer matches `/SSO/ORGX/team`. Up to
+  1.7 a sibling group whose name started with the same characters was stripped into the target
+  (and created there with *Create groups that do not exist*), counted as managed for removal,
+  and emitted by the claim mapper's path filter. Affected: configurations where one prefix is a
+  character-wise prefix of another group name.
+* **Target Group Prefix is resolved from the realm root.** Up to 1.7 a value without leading
+  slash matched the first group of that name anywhere in the tree. The mapper now logs a warning
+  per mapper where the two lookups differ; `legacyTargetLookup` restores the old lookup until 2.0.
+  Affected: target prefixes without leading slash whose first segment also exists as a nested
+  group.
+* **Trailing slash on the Target Group Prefix.** Up to 1.7 `/SSO/ORG/` built the path
+  `SSO/ORG//team`, which *Remove group memberships not in claim* then removed again in the same
+  sync, leaving the user without the group. Slashes are now normalised.
+
+Unit tests and `ci/idp-mapper-e2e` cover the new behaviour (`sibling` scenario).
+
 ## Compatibility
 
 | Extension version | Keycloak |
 |---|---|
+| 1.8.x | ≥ 26.8 |
 | 1.7.x | ≥ 26.8 (uses the IdP admin role mapping check introduced in 26.8.0) |
 | 1.0 – 1.6 | ≥ 24 (tested against 26.x up to 26.7) |
 
