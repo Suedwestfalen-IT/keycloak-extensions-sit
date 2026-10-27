@@ -99,10 +99,10 @@ all.
 distribution, which brokers itself: for every sync mode a first login, a group change upstream and
 a group assigned only after the first login.
 
-> Up to 1.6.x the mapper also implemented `preprocessFederatedIdentity` as a "fallback" sync on
+> Up to 1.7.0 the mapper also implemented `preprocessFederatedIdentity` as a "fallback" sync on
 > every login. It looked the user up by `BrokeredIdentityContext#getBrokerUserId()`
 > (`<alias>.<sub>`), while Keycloak stores the plain `sub` in the federated identity link, so the
-> lookup never found a user and the method never did anything. 1.7.0 removes it; the behaviour is
+> lookup never found a user and the method never did anything. 1.7.1 removes it; the behaviour is
 > unchanged (verified with the e2e test against the old and the new jar).
 
 ### Logging
