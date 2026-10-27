@@ -26,8 +26,11 @@ import java.util.stream.Stream;
  *  - Optional removal of memberships for groups NOT in the claim,
  *    scoped to a configurable managed-prefix so manually assigned groups
  *    are left untouched
- *  - Target Group Prefix starting with "/" is treated as absolute (root-only match),
- *    preventing accidental matches against same-named sub-groups
+ *  - All prefixes (strip, target, managed) are paths from the realm root and are compared
+ *    segment by segment (see GroupPath): "/SSO/ORG" matches "/SSO/ORG/team", not
+ *    "/SSO/ORGX/team"; leading and trailing slashes do not matter. The target prefix is
+ *    resolved from the root; LEGACY_TARGET_LOOKUP restores the pre-1.7 lookup of a target
+ *    prefix without leading slash anywhere in the tree
  *  - Groups carrying administrative roles are only joined when the identity provider
  *    allows admin role mapping (Keycloak 26.8+, same check as the built-in group mappers)
  *
@@ -53,6 +56,8 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     static final String REMOVE_NOT_LISTED = "removeNotListed";
     static final String MANAGED_PREFIX    = "managedPrefix";
     static final String CREATE_MISSING    = "createMissing";
+    /** Pre-1.7 behaviour: a target prefix without leading slash matched a group of that name anywhere. */
+    static final String LEGACY_TARGET_LOOKUP = "legacyTargetLookup";
 
     /** Splits the GROUP_PREFIX config value at comma, new line or Keycloak's '##' delimiter. */
     private static final Pattern PREFIX_SEPARATOR = Pattern.compile("##|[,\\r\\n]");
@@ -77,6 +82,8 @@ public class IdpGroupMapper extends AbstractClaimMapper {
             "Prefixes stripped from every claim value before matching. Enter one prefix per " +
             "line (a comma works too), one for each top-level group of the upstream IdP, " +
             "e.g. '/PartnerA' and '/PartnerB' both map '/PartnerX/team-1' to 'team-1'. " +
+            "Compared segment by segment: '/SSO/ORG' matches '/SSO/ORG/team' but not '/SSO/ORGX/team'; " +
+            "leading and trailing slashes do not matter. " +
             "The longest matching prefix wins; claim values matching no prefix are used unchanged."
         );
         // NOTE: deliberately not MULTIVALUED_STRING_TYPE. The admin console posts such a field
@@ -90,10 +97,10 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         targetPrefix.setName(TARGET_PREFIX);
         targetPrefix.setLabel("Target Group Prefix");
         targetPrefix.setHelpText(
-            "If set, groups are placed under this prefix group, e.g. 'KC2' turns 'koki/koki-user' into 'KC2/koki/koki-user'. " +
-            "Also scopes removal to only groups under this prefix. " +
-            "If the value starts with '/', the first segment is matched exclusively at root level " +
-            "(prevents accidental matches against same-named sub-groups like /Probe/SSO)."
+            "If set, groups are placed under this path, e.g. '/KC2' turns 'koki/koki-user' into '/KC2/koki/koki-user'. " +
+            "Also scopes removal to only groups under this path. " +
+            "The path is resolved from the realm root; leading and trailing slashes do not matter " +
+            "('KC2', '/KC2' and '/KC2/' are the same)."
         );
         targetPrefix.setType(ProviderConfigProperty.STRING_TYPE);
         targetPrefix.setDefaultValue("");
@@ -118,11 +125,31 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         ProviderConfigProperty managed = new ProviderConfigProperty();
         managed.setName(MANAGED_PREFIX);
         managed.setLabel("Managed Group Prefix");
-        managed.setHelpText("Only groups whose name starts with this prefix are considered for removal. Leave empty to manage all groups.");
+        managed.setHelpText(
+            "Only groups below this path are considered for removal. Compared segment by segment " +
+            "('/SSO/ORG' covers '/SSO/ORG/team', not '/SSO/ORGX/team'). Leave empty to manage all groups. " +
+            "Ignored when a Target Group Prefix is set."
+        );
         managed.setType(ProviderConfigProperty.STRING_TYPE);
         managed.setDefaultValue("");
         CONFIG_PROPERTIES.add(managed);
+
+        ProviderConfigProperty legacy = new ProviderConfigProperty();
+        legacy.setName(LEGACY_TARGET_LOOKUP);
+        legacy.setLabel("Legacy: resolve Target Group Prefix anywhere in the tree");
+        legacy.setHelpText(
+            "Before 1.7 a Target Group Prefix WITHOUT leading slash (e.g. 'SSO/ORG') matched the first " +
+            "group named 'SSO' anywhere in the tree, also a nested one like /Probe/SSO. Since 1.7 the " +
+            "prefix is always resolved from the realm root. Enable this only if the old behaviour is " +
+            "needed; the mapper logs a warning when the two lookups differ. Will be removed in 2.0."
+        );
+        legacy.setType(ProviderConfigProperty.BOOLEAN_TYPE);
+        legacy.setDefaultValue("false");
+        CONFIG_PROPERTIES.add(legacy);
     }
+
+    /** Mappers for which the legacy-lookup difference was already logged (once per mapper and server start). */
+    private static final Set<String> LEGACY_LOOKUP_WARNED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     // ── SPI metadata ─────────────────────────────────────────────────────────
 
@@ -183,20 +210,26 @@ public class IdpGroupMapper extends AbstractClaimMapper {
 
         String  claimName       = cfg(mapperModel, CLAIM_NAME,        "groups");
         List<String> prefixes   = parsePrefixes(mapperModel.getConfig().get(GROUP_PREFIX));
-        String  managedPrefix   = stripLeadingSlash(cfg(mapperModel, MANAGED_PREFIX, ""));
+        String  managedPrefix   = GroupPath.normalize(cfg(mapperModel, MANAGED_PREFIX, ""));
         boolean removeNotListed = cfgBool(mapperModel, REMOVE_NOT_LISTED);
         boolean createMissing   = cfgBool(mapperModel, CREATE_MISSING);
+        boolean legacyLookup    = cfgBool(mapperModel, LEGACY_TARGET_LOOKUP);
 
-        // Preserve leading slash as "absolute" signal before stripping
+        // The target prefix is resolved from the realm root. Only with LEGACY_TARGET_LOOKUP does a
+        // value without leading slash fall back to the pre-1.7 "first group of that name anywhere".
         String  rawTargetPrefix         = cfg(mapperModel, TARGET_PREFIX, "");
-        boolean targetPrefixAbsolute    = rawTargetPrefix.startsWith("/");
-        String  targetPrefix            = stripLeadingSlash(rawTargetPrefix);
+        String  targetPrefix            = GroupPath.normalize(rawTargetPrefix);
+        boolean targetPrefixAbsolute    = !legacyLookup || rawTargetPrefix.trim().startsWith("/");
 
         // effective managed scope: targetPrefix wins over managedPrefix if set
         String effectiveScope = !targetPrefix.isEmpty() ? targetPrefix : managedPrefix;
 
+        if (!legacyLookup && !targetPrefix.isEmpty() && !rawTargetPrefix.trim().startsWith("/")) {
+            warnIfLegacyLookupWouldDiffer(realm, mapperModel, rawTargetPrefix, targetPrefix);
+        }
+
         Set<String> claimedRaw = extractGroupsFromClaim(context, claimName, prefixes);
-        LOG.debugf("IdpGroupMapper: user=%s prefixes=%s claimedRaw=%s targetPrefix=%s (absolute=%b) " +
+        LOG.debugf("IdpGroupMapper: user=%s prefixes=%s claimedRaw=%s targetPrefix=%s (rootOnly=%b) " +
                         "removeNotListed=%b createMissing=%b effectiveScope='%s'",
                 user.getUsername(), prefixes, claimedRaw, targetPrefix, targetPrefixAbsolute,
                 removeNotListed, createMissing, effectiveScope);
@@ -207,10 +240,11 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         List<String> notFound = new ArrayList<>();
         List<String> created  = new ArrayList<>();
 
-        // Build full paths including targetPrefix, e.g. "KC2/koki/koki-user"
+        // Build full paths including targetPrefix, e.g. "KC2/koki/koki-user" (normalized, so a
+        // trailing slash in the configured prefix cannot produce "KC2//koki/koki-user")
         Set<String> claimedFull = new java.util.LinkedHashSet<>();
         for (String p : claimedRaw) {
-            claimedFull.add(targetPrefix.isEmpty() ? p : targetPrefix + "/" + p);
+            claimedFull.add(GroupPath.normalize(targetPrefix.isEmpty() ? p : targetPrefix + "/" + p));
         }
 
         // Add. Groups resolved in this sync are remembered by path, so a parent shared by several
@@ -266,6 +300,30 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         } else {
             LOG.debug(summary);
         }
+    }
+
+    /**
+     * Since 1.7 a target prefix is resolved from the realm root. Before, a prefix without leading
+     * slash matched the first group of that name anywhere in the tree. When the two lookups would
+     * pick different groups, say so once per mapper, so an operator sees after the upgrade which
+     * mapper needs a full path (or, as a last resort, LEGACY_TARGET_LOOKUP).
+     */
+    private void warnIfLegacyLookupWouldDiffer(RealmModel realm, IdentityProviderMapperModel mapperModel,
+                                               String rawTargetPrefix, String targetPrefix) {
+        String key = mapperModel.getId() != null ? mapperModel.getId()
+                : mapperModel.getIdentityProviderAlias() + "/" + mapperModel.getName();
+        if (LEGACY_LOOKUP_WARNED.contains(key)) return;
+        String first = GroupPath.segments(targetPrefix).get(0);
+        GroupModel root = realm.getTopLevelGroupsStream().filter(g -> first.equals(g.getName())).findFirst().orElse(null);
+        GroupModel any  = realm.getGroupsStream().filter(g -> first.equals(g.getName())).findFirst().orElse(null);
+        if (any != null && (root == null || !any.getId().equals(root.getId()))) {
+            LOG.warnf("IdpGroupMapper: mapper=%s idp=%s targetPrefix='%s' is resolved from the realm root since 1.7; " +
+                      "the pre-1.7 lookup would have used '%s'. Configure the full path (e.g. '/%s') or, " +
+                      "to keep the old behaviour, enable '%s' (removed in 2.0).",
+                    mapperModel.getName(), mapperModel.getIdentityProviderAlias(), rawTargetPrefix,
+                    "/" + groupPath(realm, any), targetPrefix, LEGACY_TARGET_LOOKUP);
+        }
+        LEGACY_LOOKUP_WARNED.add(key);
     }
 
     // ── Group resolution (nested) ─────────────────────────────────────────────
@@ -368,8 +426,9 @@ public class IdpGroupMapper extends AbstractClaimMapper {
         return String.join("/", parts);
     }
 
+    /** Segment-wise: "SSO/ORG" covers "SSO/ORG/team" and "SSO/ORG" itself, not "SSO/ORGX/team". */
     private boolean isManagedGroup(RealmModel realm, GroupModel group, String managedPrefix) {
-        return managedPrefix.isEmpty() || groupPath(realm, group).startsWith(managedPrefix);
+        return GroupPath.matches(groupPath(realm, group), managedPrefix);
     }
 
     // ── Claim extraction ─────────────────────────────────────────────────────
@@ -404,13 +463,6 @@ public class IdpGroupMapper extends AbstractClaimMapper {
                 .collect(Collectors.toSet());
     }
 
-    private String stripLeadingSlash(String value) {
-        if (value == null) return "";
-        String v = value;
-        while (v.startsWith("/")) v = v.substring(1);
-        return v;
-    }
-
     /**
      * Parses the configured prefix list. Prefixes are separated by a new line, a comma or
      * Keycloak's '##' delimiter, so a value entered in the textarea, a previously configured
@@ -442,21 +494,16 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     }
 
     /**
-     * Removes the first matching prefix (longest one first) from a claim value.
-     * Values matching none of the prefixes are returned unchanged apart from
-     * leading slashes.
+     * Removes the first matching prefix (longest one first) from a claim value, matching whole
+     * path segments only ("/SSO/ORG" does not match "/SSO/ORGX/team"). Values matching none of
+     * the prefixes are returned normalized (no leading, trailing or doubled slashes).
      */
     static String stripPrefix(String value, List<String> prefixes) {
-        String result = value;
         for (String prefix : prefixes) {
-            if (value.startsWith(prefix)) {
-                result = value.substring(prefix.length());
-                break;
-            }
+            String rest = GroupPath.strip(value, prefix);
+            if (rest != null) return rest;
         }
-        // Remove leading slashes left after stripping (e.g. "/SSO/a" → strip "/SSO" → "/a" → "a")
-        while (result.startsWith("/")) result = result.substring(1);
-        return result;
+        return GroupPath.normalize(value);
     }
 
     private String cfg(IdentityProviderMapperModel model, String key, String def) {

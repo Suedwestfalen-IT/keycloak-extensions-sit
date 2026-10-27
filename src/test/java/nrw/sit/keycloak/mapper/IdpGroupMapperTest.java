@@ -93,4 +93,28 @@ class IdpGroupMapperTest {
         assertEquals("admins", IdpGroupMapper.stripPrefix("/admins", Collections.emptyList()));
         assertEquals("admins", IdpGroupMapper.stripPrefix("/admins", IdpGroupMapper.parsePrefixes("/")));
     }
+
+    @Test
+    void stripPrefixMatchesWholeSegmentsOnly() {
+        List<String> prefixes = IdpGroupMapper.parsePrefixes("/SSO/ORG");
+        assertEquals("team", IdpGroupMapper.stripPrefix("/SSO/ORG/team", prefixes));
+        // a sibling that merely starts with the same characters is not stripped (and not mangled)
+        assertEquals("SSO/ORGX/team", IdpGroupMapper.stripPrefix("/SSO/ORGX/team", prefixes));
+        assertEquals("SSO/OR", IdpGroupMapper.stripPrefix("/SSO/OR", prefixes));
+    }
+
+    @Test
+    void stripPrefixIgnoresSlashVariantsInPrefixAndValue() {
+        for (String prefix : List.of("/SSO/ORG", "SSO/ORG", "/SSO/ORG/", "SSO/ORG/", "//SSO//ORG//")) {
+            List<String> prefixes = IdpGroupMapper.parsePrefixes(prefix);
+            assertEquals("team", IdpGroupMapper.stripPrefix("/SSO/ORG/team", prefixes), prefix);
+            assertEquals("team", IdpGroupMapper.stripPrefix("SSO/ORG/team/", prefixes), prefix);
+            assertEquals("", IdpGroupMapper.stripPrefix("/SSO/ORG/", prefixes), prefix);
+        }
+    }
+
+    @Test
+    void stripPrefixNormalizesNonMatchingValues() {
+        assertEquals("Other/y", IdpGroupMapper.stripPrefix("/Other//y/", IdpGroupMapper.parsePrefixes("/SSO")));
+    }
 }

@@ -12,6 +12,13 @@ For each sync mode of the mapper the same story runs twice:
   late     login 1 without any group, add koki-user upstream, login 2
            (a user who logged in before the group was assigned upstream)
 
+and once, with FORCE and a production-like prefix configuration (strip/target/managed
+prefix /SSO/ORG, createMissing):
+
+  sibling  alice is also in /SSO/ORGX/x upstream (same leading characters, other
+           organisation): nothing is created below /SSO/ORG for it, and a membership in
+           /SSO/ORGX/x on the broker side is not removed by removeNotListed
+
 Expected (Keycloak semantics, see IdentityProviderMapperSyncModeDelegate):
 
   IMPORT, INHERIT(IdP=IMPORT)   login 2 leaves the memberships as they were after login 1
@@ -48,7 +55,7 @@ APP_REDIRECT = BASE + "/app/callback"
 BROKER_CLIENT = "broker-client"
 BROKER_SECRET = "broker-secret"
 MAPPER = "sit-oidc-group-idp-mapper"
-GROUPS = ("/SSO/ORG/koki-user", "/SSO/ORG/koki-admin")
+GROUPS = ("/SSO/ORG/koki-user", "/SSO/ORG/koki-admin", "/SSO/ORGX/x")
 
 # ── setup ───────────────────────────────────────────────────────────────────
 
@@ -112,7 +119,7 @@ def setup(t):
             "syncMode": "IMPORT"}}, token=t)
 
 
-def configure(t, idp_sync_mode, mapper_sync_mode):
+def configure(t, idp_sync_mode, mapper_sync_mode, mapper_config=None):
     """(Re)creates the mapper with the given sync mode and resets both sides."""
     r = "/admin/realms/" + BR
     idp = api("GET", r + "/identity-provider/instances/" + IDP_ALIAS, token=t)
@@ -120,11 +127,13 @@ def configure(t, idp_sync_mode, mapper_sync_mode):
     api("PUT", r + "/identity-provider/instances/" + IDP_ALIAS, idp, token=t)
     for m in api("GET", r + "/identity-provider/instances/%s/mappers" % IDP_ALIAS, token=t):
         api("DELETE", r + "/identity-provider/instances/%s/mappers/%s" % (IDP_ALIAS, m["id"]), token=t)
+    config = {"syncMode": mapper_sync_mode, "claim": "sso-groups", "groupPrefix": "",
+              "targetPrefix": "", "createMissing": "false", "removeNotListed": "true",
+              "managedPrefix": "/SSO/ORG"}
+    config.update(mapper_config or {})
     api("POST", r + "/identity-provider/instances/%s/mappers" % IDP_ALIAS, {
         "name": "sso-groups", "identityProviderAlias": IDP_ALIAS, "identityProviderMapper": MAPPER,
-        "config": {"syncMode": mapper_sync_mode, "claim": "sso-groups", "groupPrefix": "",
-                   "targetPrefix": "", "createMissing": "false", "removeNotListed": "true",
-                   "managedPrefix": "/SSO/ORG"}}, token=t)
+        "config": config}, token=t)
     for u in api("GET", r + "/users?username=alice&exact=true", token=t):
         api("DELETE", r + "/users/" + u["id"], token=t)
     set_upstream_groups(t, [])
@@ -183,14 +192,13 @@ def login():
 # ── scenarios ───────────────────────────────────────────────────────────────
 
 # Summary lines the mapper must have written by the end: one per sync (login 1 always syncs,
-# login 2 only in the modes that sync), INFO when the sync changed a membership, DEBUG otherwise.
-expected_log = {"syncs": 0, "info": 0}
+# login 2 only in the modes that sync), INFO when the sync changed a membership, DEBUG otherwise,
+# WARN when a claimed group could not be resolved.
+expected_log = {"DEBUG": 0, "INFO": 0, "WARN": 0}
 
 
-def expect_sync(changed):
-    expected_log["syncs"] += 1
-    if changed:
-        expected_log["info"] += 1
+def expect_sync(changed, level=None):
+    expected_log[level or ("INFO" if changed else "DEBUG")] += 1
 
 
 MODES = [
@@ -244,6 +252,33 @@ def scenario_late(t, label, idp_mode, mapper_mode, syncs):
     check("%-20s late:   group assigned after login 1 %s" % (label, "picked up" if syncs else "not picked up"), run)
 
 
+def scenario_sibling(t):
+    """Prefix matching on segment boundaries (segment-wise since 1.7), FORCE, production-like config."""
+    def run():
+        configure(t, "IMPORT", "FORCE", {"groupPrefix": "/SSO/ORG", "targetPrefix": "/SSO/ORG",
+                                         "managedPrefix": "/SSO/ORG", "createMissing": "true"})
+        set_upstream_groups(t, ["/SSO/ORG/koki-user", "/SSO/ORGX/x"])
+        login()
+        # /SSO/ORGX/x does not match the prefix, is used unchanged below the target and created there
+        # (documented behaviour for unmatched values). Pre-1.7 it was stripped to "X/x" instead.
+        expect_sync(changed=True)
+        after1 = broker_groups(t)
+        if after1 != ["/SSO/ORG/SSO/ORGX/x", "/SSO/ORG/koki-user"]:
+            raise RuntimeError("after login 1: %s" % after1)
+        mangled = api("GET", "/admin/realms/%s/group-by-path/SSO/ORG/X" % BR, token=t, expect=(200, 404))
+        if isinstance(mangled, dict) and mangled.get("id"):  # a 404 also comes back as a JSON error body
+            raise RuntimeError("pre-1.7 sibling mangling: /SSO/ORG/X was created")
+        # a membership in the sibling organisation on the broker side is outside the managed scope
+        api("PUT", "/admin/realms/%s/users/%s/groups/%s" % (BR, broker_user(t)["id"], group_id(t, BR, "/SSO/ORGX/x")), token=t)
+        login()
+        expect_sync(changed=False)
+        after2 = broker_groups(t)
+        if after2 != ["/SSO/ORG/SSO/ORGX/x", "/SSO/ORG/koki-user", "/SSO/ORGX/x"]:
+            raise RuntimeError("after login 2: %s (sibling membership removed?)" % after2)
+        return "no /SSO/ORG/X created, /SSO/ORGX/x membership kept"
+    check("FORCE                sibling: /SSO/ORGX is not /SSO/ORG (segment-wise prefixes)", run)
+
+
 def federated_link(t):
     def run():
         configure(t, "IMPORT", "IMPORT")
@@ -295,13 +330,10 @@ def log_checks(scenarios_passed):
     def one_summary_per_sync():
         if not scenarios_passed:
             raise RuntimeError("not compared, a scenario failed (found %d summary line(s))" % len(levels))
-        got = {"syncs": len(levels), "info": levels.count("INFO")}
-        if got != expected_log:
-            raise RuntimeError("found %s, expected %s (levels: %s)" % (got, expected_log, levels))
-        if levels.count("WARN") or levels.count("ERROR"):
-            raise RuntimeError("WARN/ERROR summary lines: %s" % levels)
-        return "%d summary line(s), %d of them INFO (changed memberships), rest DEBUG" % (
-            got["syncs"], got["info"])
+        got = {lvl: levels.count(lvl) for lvl in expected_log}
+        if got != expected_log or len(levels) != sum(expected_log.values()):
+            raise RuntimeError("found %s (%d lines), expected %s (levels: %s)" % (got, len(levels), expected_log, levels))
+        return "%d summary line(s): %s" % (len(levels), ", ".join("%d %s" % (n, lvl) for lvl, n in got.items()))
     check("log: one summary line per sync, INFO only when memberships changed", one_summary_per_sync)
 
 
@@ -311,6 +343,7 @@ def main():
     for label, idp_mode, mapper_mode, syncs in MODES:
         scenario_update(t, label, idp_mode, mapper_mode, syncs)
         scenario_late(t, label, idp_mode, mapper_mode, syncs)
+    scenario_sibling(t)
     federated_link(t)
     log_checks(scenarios_passed=not failures)
     print()

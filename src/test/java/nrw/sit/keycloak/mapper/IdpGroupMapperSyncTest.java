@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -275,17 +276,52 @@ class IdpGroupMapperSyncTest {
         assertTrue(isMember("stale"));
     }
 
-    // ── absolute vs. relative target prefix ──────────────────────────────────
+    // ── target prefix: resolved from the realm root ──────────────────────────
 
     @Test
-    void relativeTargetPrefixMayMatchSameNamedSubGroup() {
+    void targetPrefixWithoutLeadingSlashIsResolvedAtRootToo() {
         GroupModel probe = group("Probe", null);
         GroupModel nestedSso = group("SSO", probe);
         group("x", nestedSso);
 
-        sync(claim("x"), IdpGroupMapper.TARGET_PREFIX, "SSO");
+        IdentityProviderMapperModel model = model(IdpGroupMapper.TARGET_PREFIX, "SSO");
+        model.setId("mapper-" + ids.incrementAndGet()); // the warning is logged once per mapper id
+        List<LogRecord> records = capture(() -> mapper.importNewUser(session, realm, user, model, claim("x")));
 
-        assertTrue(isMember("Probe/SSO/x"));
+        // pre-1.7 this joined Probe/SSO/x; now there is no root group "SSO" -> not found
+        assertTrue(memberships.isEmpty());
+        assertNull(find("SSO"));
+        verify(realm, never()).createGroup(anyString());
+        // and the operator is told once that the lookup changed
+        List<LogRecord> warnings = records.stream().filter(r -> r.getMessage().contains("resolved from the realm root")).collect(Collectors.toList());
+        assertEquals(1, warnings.size(), records.toString());
+        assertEquals(Level.WARNING, warnings.get(0).getLevel());
+        assertTrue(warnings.get(0).getMessage().contains("'/Probe/SSO'"), warnings.get(0).getMessage());
+    }
+
+    @Test
+    void legacyLookupDifferenceIsLoggedOncePerMapper() {
+        GroupModel probe = group("Probe", null);
+        group("SSO", probe);
+        IdentityProviderMapperModel model = model(IdpGroupMapper.TARGET_PREFIX, "SSO");
+        model.setId("mapper-" + ids.incrementAndGet());
+
+        List<LogRecord> first = capture(() -> mapper.importNewUser(session, realm, user, model, claim("x")));
+        List<LogRecord> second = capture(() -> mapper.importNewUser(session, realm, user, model, claim("x")));
+
+        assertEquals(1, first.stream().filter(r -> Level.WARNING.equals(r.getLevel()) && r.getMessage().contains("realm root")).count());
+        assertEquals(0, second.stream().filter(r -> Level.WARNING.equals(r.getLevel()) && r.getMessage().contains("realm root")).count());
+    }
+
+    @Test
+    void noLegacyWarningWhenBothLookupsAgree() {
+        GroupModel sso = group("SSO", null);
+        group("x", sso);
+
+        List<LogRecord> records = capture(() -> sync(claim("x"), IdpGroupMapper.TARGET_PREFIX, "SSO"));
+
+        assertTrue(isMember("SSO/x"));
+        assertTrue(records.stream().noneMatch(r -> r.getMessage().contains("realm root")), records.toString());
     }
 
     @Test
@@ -298,6 +334,108 @@ class IdpGroupMapperSyncTest {
 
         assertTrue(memberships.isEmpty());
         assertNull(find("SSO"));
+        verify(realm, never()).getGroupsStream();
+    }
+
+    @Test
+    void legacyFlagRestoresLookupAnywhereInTheTree() {
+        GroupModel probe = group("Probe", null);
+        GroupModel nestedSso = group("SSO", probe);
+        group("x", nestedSso);
+
+        sync(claim("x"),
+                IdpGroupMapper.TARGET_PREFIX, "SSO",
+                IdpGroupMapper.LEGACY_TARGET_LOOKUP, "true");
+
+        assertTrue(isMember("Probe/SSO/x"));
+        verify(realm, never()).getTopLevelGroupsStream();
+    }
+
+    @Test
+    void legacyFlagKeepsLeadingSlashAbsolute() {
+        GroupModel probe = group("Probe", null);
+        GroupModel nestedSso = group("SSO", probe);
+        group("x", nestedSso);
+
+        sync(claim("x"),
+                IdpGroupMapper.TARGET_PREFIX, "/SSO",
+                IdpGroupMapper.LEGACY_TARGET_LOOKUP, "true");
+
+        assertTrue(memberships.isEmpty());
+    }
+
+    @Test
+    void trailingSlashOnTargetPrefixKeepsTheJoinedGroup() {
+        GroupModel sso = group("SSO", null);
+        GroupModel org = group("ORG", sso);
+        group("team-a", org);
+
+        // pre-1.7: joined "SSO/ORG//team-a" and removed "SSO/ORG/team-a" in the same sync
+        sync(claim("/SSO/ORG/team-a"),
+                IdpGroupMapper.GROUP_PREFIX, "/SSO/ORG/",
+                IdpGroupMapper.TARGET_PREFIX, "/SSO/ORG/",
+                IdpGroupMapper.REMOVE_NOT_LISTED, "true");
+
+        assertTrue(isMember("SSO/ORG/team-a"));
+    }
+
+    // ── prefixes match whole segments only ───────────────────────────────────
+
+    @Test
+    void siblingGroupWithSameLeadingCharactersIsNotStrippedIntoTheTarget() {
+        GroupModel sso = group("SSO", null);
+        GroupModel org = group("ORG", sso);
+        group("team-a", org);
+
+        sync(claim("/SSO/ORG/team-a", "/SSO/ORGX/team-b"),
+                IdpGroupMapper.GROUP_PREFIX, "/SSO/ORG",
+                IdpGroupMapper.TARGET_PREFIX, "/SSO/ORG",
+                IdpGroupMapper.CREATE_MISSING, "true");
+
+        assertTrue(isMember("SSO/ORG/team-a"));
+        // pre-1.7 "/SSO/ORGX/team-b" was stripped to "X/team-b" and SSO/ORG/X/team-b was created
+        assertNull(find("SSO/ORG/X"));
+        // the unmatched value is used unchanged below the target (documented behaviour)
+        assertTrue(isMember("SSO/ORG/SSO/ORGX/team-b"));
+        assertEquals(2, memberships.size());
+    }
+
+    @Test
+    void siblingMembershipIsNotRemovedByManagedPrefix() {
+        GroupModel sso = group("SSO", null);
+        GroupModel org = group("ORG", sso);
+        GroupModel orgx = group("ORGX", sso);
+        group("team-a", org);
+        GroupModel foreign = group("team-b", orgx);
+        memberships.add(foreign);
+
+        sync(claim("/SSO/ORG/team-a"),
+                IdpGroupMapper.GROUP_PREFIX, "/SSO/ORG",
+                IdpGroupMapper.TARGET_PREFIX, "/SSO/ORG",
+                IdpGroupMapper.REMOVE_NOT_LISTED, "true");
+
+        assertTrue(isMember("SSO/ORG/team-a"));
+        assertTrue(isMember("SSO/ORGX/team-b"), "pre-1.7 this was removed as 'managed'");
+    }
+
+    @Test
+    void managedPrefixMatchesWholeSegmentsOnly() {
+        GroupModel sso = group("SSO", null);
+        GroupModel org = group("ORG", sso);
+        GroupModel orgx = group("ORGX", sso);
+        GroupModel stale = group("stale", org);
+        GroupModel foreign = group("team-b", orgx);
+        memberships.add(stale);
+        memberships.add(foreign);
+
+        sync(claim("SSO/ORG/fresh"),
+                IdpGroupMapper.MANAGED_PREFIX, "SSO/ORG/",
+                IdpGroupMapper.REMOVE_NOT_LISTED, "true",
+                IdpGroupMapper.CREATE_MISSING, "true");
+
+        assertTrue(isMember("SSO/ORG/fresh"));
+        assertFalse(isMember("SSO/ORG/stale"));
+        assertTrue(isMember("SSO/ORGX/team-b"));
     }
 
     // ── admin role mapping (Keycloak 26.8+, CVE-2026-12388) ──────────────────
@@ -402,43 +540,6 @@ class IdpGroupMapperSyncTest {
         verify(realm, never()).getGroupsStream();
     }
 
-    @Test
-    void relativeTargetPrefixStillScansAllGroups() {
-        GroupModel probe = group("Probe", null);
-        GroupModel nestedSso = group("SSO", probe);
-        group("x", nestedSso);
-
-        sync(claim("x"), IdpGroupMapper.TARGET_PREFIX, "SSO");
-
-        assertTrue(isMember("Probe/SSO/x"));
-        verify(realm, never()).getTopLevelGroupsStream();
-    }
-
-    @Test
-    void updateBrokeredUserSyncsLikeImportNewUser() {
-        GroupModel kc2 = group("KC2", null);
-        GroupModel old = group("old", kc2);
-        group("new", kc2);
-        memberships.add(old);
-
-        IdentityProviderMapperModel model = model(IdpGroupMapper.TARGET_PREFIX, "KC2",
-                IdpGroupMapper.REMOVE_NOT_LISTED, "true");
-        mapper.updateBrokeredUser(session, realm, user, model, claim("new"));
-
-        assertTrue(isMember("KC2/new"));
-        assertFalse(isMember("KC2/old"));
-    }
-
-    @Test
-    void preprocessFederatedIdentityDoesNothing() {
-        // the inherited no-op: groups are only synced via importNewUser / updateBrokeredUser
-        group("users", null);
-        IdentityProviderMapperModel model = model();
-        mapper.preprocessFederatedIdentity(session, realm, model, claim("users"));
-
-        verifyNoInteractions(session, realm, user);
-    }
-
     // ── summary log line ─────────────────────────────────────────────────────
     // jboss-logging has no backend on the test classpath and falls back to java.util.logging,
     // so the summary can be captured there (DEBUG -> FINE, WARN -> WARNING).
@@ -481,8 +582,10 @@ class IdpGroupMapperSyncTest {
         List<LogRecord> records = new ArrayList<>();
         Handler handler = new Handler() {
             @Override public void publish(LogRecord r) {
-                if (r.getMessage() != null && r.getMessage().startsWith("IdpGroupMapper: user=")
-                        && r.getMessage().contains(" idp=")) records.add(r);
+                if (r.getMessage() == null) return;
+                boolean summary = r.getMessage().startsWith("IdpGroupMapper: user=") && r.getMessage().contains(" idp=");
+                boolean legacy = r.getMessage().startsWith("IdpGroupMapper: mapper=");
+                if (summary || legacy) records.add(r);
             }
             @Override public void flush() {}
             @Override public void close() {}

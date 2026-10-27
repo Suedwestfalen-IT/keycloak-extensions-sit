@@ -14,7 +14,8 @@ import java.util.stream.Collectors;
  * OIDC Protocol Mapper that adds a filtered list of group paths to a JWT claim.
  *
  * Filters (both optional, combined with AND):
- *  - pathPrefix : only groups whose full path starts with this value (e.g. /SSO)
+ *  - pathPrefix : only groups at or below this path (e.g. /SSO), compared segment by segment
+ *                 (see GroupPath): /SSO matches /SSO/koki but not /SSOX/a
  *  - regex      : only groups whose full path matches this regular expression
  *
  * The claim value is a JSON array of full group paths (e.g. ["/SSO/koki/koki-user"]).
@@ -55,7 +56,11 @@ public class FilteredGroupClaimMapper extends AbstractOIDCProtocolMapper
         ProviderConfigProperty prefix = new ProviderConfigProperty();
         prefix.setName(PATH_PREFIX);
         prefix.setLabel("Path Prefix Filter");
-        prefix.setHelpText("Only include groups whose full path starts with this prefix (e.g. '/SSO'). Leave empty to skip this filter.");
+        prefix.setHelpText(
+            "Only include groups at or below this path (e.g. '/SSO'). Compared segment by segment: " +
+            "'/SSO' matches '/SSO/koki' but not '/SSOX/a'; leading and trailing slashes do not matter. " +
+            "Leave empty to skip this filter."
+        );
         prefix.setType(ProviderConfigProperty.STRING_TYPE);
         prefix.setDefaultValue("");
         CONFIG_PROPERTIES.add(prefix);
@@ -104,7 +109,7 @@ public class FilteredGroupClaimMapper extends AbstractOIDCProtocolMapper
 
         List<String> groups = user.getGroupsStream()
                 .map(g -> buildPath(realm, g))
-                .filter(path -> prefix.isEmpty() || path.startsWith(prefix))
+                .filter(path -> GroupPath.matches(path, prefix))
                 .filter(path -> finalPattern == null || finalPattern.matcher(path).matches())
                 .map(path -> fullPath ? path : leafName(path))
                 .sorted()
