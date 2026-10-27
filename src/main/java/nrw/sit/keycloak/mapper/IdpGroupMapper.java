@@ -9,6 +9,7 @@ import org.keycloak.provider.ProviderConfigProperty;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Keycloak Identity Provider Mapper (SPI).
@@ -34,8 +35,10 @@ import java.util.stream.Collectors;
  * FORCE or LEGACY, on every further login (updateBrokeredUser). With IMPORT later logins do
  * not touch the memberships.
  *
- * Logging: one INFO line per sync ("IdpGroupMapper: user=... added=[...] removed=[...] ..."),
- * WARN instead when claimed groups could not be resolved. Per-group details are DEBUG.
+ * Logging: one summary line per sync ("IdpGroupMapper: user=... added=[...] removed=[...] ...").
+ * INFO when a membership was added, removed, skipped or a group was created, WARN when claimed
+ * groups could not be resolved, DEBUG when the sync changed nothing (the common case with FORCE,
+ * where every login re-syncs). Per-group details are DEBUG.
  */
 public class IdpGroupMapper extends AbstractClaimMapper {
 
@@ -133,14 +136,22 @@ public class IdpGroupMapper extends AbstractClaimMapper {
     @Override public String[] getCompatibleProviders() { return new String[]{ "oidc" }; }
 
     /**
-     * IMPORT and LEGACY (Keycloak's default set) plus FORCE, which updateBrokeredUser fully supports.
-     * Without FORCE here Keycloak logs a "does not explicitly support sync mode FORCE" warning on
-     * every login, although it calls updateBrokeredUser anyway.
+     * The sync modes this mapper implements: IMPORT and LEGACY (Keycloak's default set) plus
+     * FORCE, which {@link #updateBrokeredUser} fully supports. Without FORCE here Keycloak logs a
+     * "does not explicitly support sync mode FORCE" warning on every login, although it calls
+     * updateBrokeredUser anyway.
+     *
+     * Listed explicitly on purpose, not {@code return true} and not derived from
+     * {@code DEFAULT_IDENTITY_PROVIDER_MAPPER_SYNC_MODES}: a sync mode added by a future Keycloak
+     * release must return false (and trigger Keycloak's warning) until its semantics have been
+     * checked against this mapper. {@code IdpGroupMapperSyncTest} fails when the enum grows.
      */
+    static final Set<IdentityProviderSyncMode> SUPPORTED_SYNC_MODES = Collections.unmodifiableSet(EnumSet.of(
+            IdentityProviderSyncMode.IMPORT, IdentityProviderSyncMode.LEGACY, IdentityProviderSyncMode.FORCE));
+
     @Override
     public boolean supportsSyncMode(IdentityProviderSyncMode syncMode) {
-        return syncMode == IdentityProviderSyncMode.FORCE
-                || DEFAULT_IDENTITY_PROVIDER_MAPPER_SYNC_MODES.contains(syncMode);
+        return syncMode != null && SUPPORTED_SYNC_MODES.contains(syncMode);
     }
 
 
@@ -202,9 +213,11 @@ public class IdpGroupMapper extends AbstractClaimMapper {
             claimedFull.add(targetPrefix.isEmpty() ? p : targetPrefix + "/" + p);
         }
 
-        // Add
+        // Add. Groups resolved in this sync are remembered by path, so a parent shared by several
+        // claimed groups (e.g. "SSO/SIT" for every "SSO/SIT/<team>") is looked up only once.
+        Map<String, GroupModel> resolved = new HashMap<>();
         for (String fullPath : claimedFull) {
-            GroupModel group = resolveGroup(realm, fullPath, createMissing, targetPrefixAbsolute, created);
+            GroupModel group = resolveGroup(realm, fullPath, createMissing, targetPrefixAbsolute, created, resolved);
             if (group == null) {
                 notFound.add(fullPath);
                 continue;
@@ -240,14 +253,18 @@ public class IdpGroupMapper extends AbstractClaimMapper {
             }
         }
 
-        // One line per sync; WARN when claimed groups could not be resolved (config problem)
+        // One summary line per sync. WARN when claimed groups could not be resolved (config
+        // problem), INFO when memberships changed, DEBUG when nothing changed: with sync mode
+        // FORCE every login re-syncs, and an unchanged sync is not worth an INFO line per login.
         String idp = context.getIdpConfig() != null ? context.getIdpConfig().getAlias() : mapperModel.getIdentityProviderAlias();
         String summary = String.format("IdpGroupMapper: user=%s idp=%s mapper=%s added=%s removed=%s skipped=%s notFound=%s created=%s",
                 user.getUsername(), idp, mapperModel.getName(), added, removed, skipped, notFound, created);
-        if (notFound.isEmpty()) {
+        if (!notFound.isEmpty()) {
+            LOG.warn(summary);
+        } else if (!added.isEmpty() || !removed.isEmpty() || !skipped.isEmpty() || !created.isEmpty()) {
             LOG.info(summary);
         } else {
-            LOG.warn(summary);
+            LOG.debug(summary);
         }
     }
 
@@ -262,9 +279,11 @@ public class IdpGroupMapper extends AbstractClaimMapper {
      *                 against top-level groups (parentId == null), preventing
      *                 accidental matches against same-named sub-groups.
      * @param created  collects the paths of groups created on the way
+     * @param resolved groups already resolved in this sync by walked path; filled and reused so
+     *                 every path segment is looked up at most once per sync
      */
     private GroupModel resolveGroup(RealmModel realm, String path, boolean createMissing, boolean rootOnly,
-                                    List<String> created) {
+                                    List<String> created, Map<String, GroupModel> resolved) {
         String[] segments = path.split("/");
         GroupModel current = null;
 
@@ -273,12 +292,19 @@ public class IdpGroupMapper extends AbstractClaimMapper {
             if (segment.isBlank()) continue;
             if (walked.length() > 0) walked.append('/');
             walked.append(segment);
+            String key = walked.toString();
+            GroupModel known = resolved.get(key);
+            if (known != null) {
+                current = known;
+                continue;
+            }
             if (current == null) {
                 current = findTopLevel(realm, segment, createMissing, rootOnly, walked, created);
             } else {
                 current = findChild(realm, current, segment, createMissing, walked, created);
             }
             if (current == null) return null; // not found and not created
+            resolved.put(key, current);
         }
         return current;
     }
@@ -288,11 +314,15 @@ public class IdpGroupMapper extends AbstractClaimMapper {
      *
      * @param rootOnly if true, only groups with parentId == null are considered,
      *                 preventing false matches against sub-groups with the same name.
+     *                 Uses the realm's top-level group list (cached by Keycloak like the full
+     *                 list, but a fraction of its size) instead of filtering every group.
      */
     private GroupModel findTopLevel(RealmModel realm, String name, boolean createMissing, boolean rootOnly,
                                     CharSequence path, List<String> created) {
-        Optional<GroupModel> found = realm.getGroupsStream()
-                .filter(g -> !rootOnly || g.getParentId() == null)
+        Stream<GroupModel> candidates = rootOnly
+                ? realm.getTopLevelGroupsStream()
+                : realm.getGroupsStream();
+        Optional<GroupModel> found = candidates
                 .filter(g -> name.equals(g.getName()))
                 .findFirst();
         if (found.isPresent()) return found.get();

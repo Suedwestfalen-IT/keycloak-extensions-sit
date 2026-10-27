@@ -1,6 +1,7 @@
 # End-to-end tests for sit-oidc-group-idp-mapper against the real Keycloak distribution with our jar:
 # Keycloak brokers itself (upstream/broker realm), every sync mode is played with curl logins
-# (first login, group change upstream, group assigned after the first login). See ci/idp-mapper-e2e/run.sh.
+# (first login, group change upstream, group assigned after the first login), and the Keycloak log
+# is checked for one summary line per sync and no sync-mode warning. See ci/idp-mapper-e2e/run.sh.
 name: IdP mapper e2e
 
 on:
@@ -42,8 +43,10 @@ jobs:
 
       - name: Report failures as annotations
         if: failure()
+        # "|| true": the step runs under bash -e, and grep exits 1 when nothing matches, which
+        # would skip the tail exactly when the log has no FAIL/ERROR line to show.
         run: |
-          { grep -E "^FAIL |^\[e2e\]|ERROR|Traceback|Error" e2e-run.log; echo "--- tail:"; tail -n 15 e2e-run.log; } \
+          { grep -E "^FAIL |^\[e2e\]|ERROR|Traceback|Error" e2e-run.log || true; echo "--- tail:"; tail -n 15 e2e-run.log; } \
             | head -n 60 | while IFS= read -r line; do echo "::error::${line}"; done
 
       - name: Summary

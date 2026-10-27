@@ -24,20 +24,22 @@ Additional check: the federated identity link stores the upstream "sub" as userI
 while BrokeredIdentityContext#getBrokerUserId() is "<alias>.<sub>" - the lookup the
 removed preprocessFederatedIdentity did could never find the user.
 
+Keycloak log (KC_LOG, set by run.sh; the mapper's logger must be on DEBUG): every sync
+has to leave exactly one summary line "IdpGroupMapper: user=... idp=... mapper=... added=..."
+(INFO when memberships changed, DEBUG otherwise) and Keycloak must not log the
+"does not explicitly support sync mode" warning for the mapper.
+
 Usage: idp_mapper_e2e.py <base-url>
 """
-import html
-import json
 import os
 import re
-import subprocess
 import sys
-import tempfile
-import urllib.error
 import urllib.parse
-import urllib.request
 
-BASE = sys.argv[1].rstrip("/")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+from kc_e2e import ADMIN, Browser, api, check, failures, form_action, init, snippet  # noqa: E402
+
+BASE = init(sys.argv[1])
 UP = "upstream"
 BR = "broker"
 IDP_ALIAS = "upstream"
@@ -47,86 +49,6 @@ BROKER_CLIENT = "broker-client"
 BROKER_SECRET = "broker-secret"
 MAPPER = "sit-oidc-group-idp-mapper"
 GROUPS = ("/SSO/HEME/koki-user", "/SSO/HEME/koki-admin")
-
-failures = []
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
-def check(label, fn):
-    try:
-        detail = fn()
-        print("OK    %s%s" % (label, (" - " + detail) if detail else ""))
-        return True
-    except Exception as e:  # noqa: BLE001 - every deviation is a finding
-        failures.append(label)
-        print("FAIL  %s - %s" % (label, e))
-        return False
-
-
-def api(method, path, body=None, token=None, form=None, expect=(200, 201, 204)):
-    url = path if path.startswith("http") else BASE + path
-    headers = {}
-    data = None
-    if form is not None:
-        data = urllib.parse.urlencode(form).encode()
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-    elif body is not None:
-        data = json.dumps(body).encode()
-        headers["Content-Type"] = "application/json"
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    req = urllib.request.Request(url, data=data, method=method, headers=headers)
-    try:
-        with opener.open(req, timeout=60) as resp:
-            raw, status = resp.read(), resp.status
-    except urllib.error.HTTPError as e:
-        raw, status = e.read(), e.code
-    if status not in expect:
-        raise RuntimeError("%s %s -> HTTP %d: %s" % (method, path, status, raw[:300].decode("utf-8", "replace")))
-    if raw:
-        try:
-            return json.loads(raw)
-        except ValueError:
-            return raw.decode("utf-8", "replace")
-    return None
-
-
-def admin_token():
-    tok = api("POST", "/realms/master/protocol/openid-connect/token", form={
-        "grant_type": "password", "client_id": "admin-cli", "username": "admin", "password": "admin"})
-    return tok["access_token"]
-
-
-class Browser:
-    """curl with a cookie jar and no automatic redirects."""
-
-    def __init__(self):
-        self.dir = tempfile.mkdtemp(prefix="idpm-")
-        self.jar = os.path.join(self.dir, "cookies")
-
-    def request(self, method, url, data=None):
-        hdr = os.path.join(self.dir, "headers")
-        cmd = ["curl", "-s", "--noproxy", "*", "-c", self.jar, "-b", self.jar, "-D", hdr,
-               "-o", "-", "-w", "\n%{http_code}", "-X", method, "-H", "Accept-Language: en"]
-        if data is not None:
-            cmd += ["--data", urllib.parse.urlencode(data)]
-        cmd.append(url)
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if out.returncode != 0:
-            raise RuntimeError("curl failed (%d): %s" % (out.returncode, out.stderr.strip()[:300]))
-        body, _, status = out.stdout.rpartition("\n")
-        headers = {}
-        with open(hdr) as fh:
-            for line in fh.read().splitlines()[1:]:
-                if ":" in line:
-                    k, v = line.split(":", 1)
-                    headers[k.strip().lower()] = v.strip()
-        return int(status), headers, body
-
-
-def snippet(body):
-    return re.sub(r"\s+", " ", body)[:300]
-
 
 # ── setup ───────────────────────────────────────────────────────────────────
 
@@ -236,7 +158,7 @@ def broker_groups(t):
 # ── login through the broker ────────────────────────────────────────────────
 
 def login():
-    b = Browser()
+    b = Browser(prefix="idpm-")
     url = BASE + "/realms/%s/protocol/openid-connect/auth?" % BR + urllib.parse.urlencode({
         "client_id": APP, "response_type": "code", "redirect_uri": APP_REDIRECT, "scope": "openid",
         "kc_idp_hint": IDP_ALIAS})
@@ -252,14 +174,24 @@ def login():
                 return
             continue
         if status == 200 and 'id="kc-form-login"' in body:
-            m = re.search(r'<form[^>]*id="kc-form-login"[^>]*action="([^"]+)"', body)
-            url, method, data = html.unescape(m.group(1)), "POST", {"username": "alice", "password": "alicepw"}
+            url, method, data = form_action(body, "kc-form-login"), "POST", {"username": "alice", "password": "alicepw"}
             continue
         raise RuntimeError("unexpected page HTTP %d at %s: %s" % (status, url, snippet(body)))
     raise RuntimeError("too many redirects")
 
 
 # ── scenarios ───────────────────────────────────────────────────────────────
+
+# Summary lines the mapper must have written by the end: one per sync (login 1 always syncs,
+# login 2 only in the modes that sync), INFO when the sync changed a membership, DEBUG otherwise.
+expected_log = {"syncs": 0, "info": 0}
+
+
+def expect_sync(changed):
+    expected_log["syncs"] += 1
+    if changed:
+        expected_log["info"] += 1
+
 
 MODES = [
     # label, IdP sync mode, mapper sync mode override, does login 2 sync?
@@ -276,11 +208,14 @@ def scenario_update(t, label, idp_mode, mapper_mode, syncs):
         configure(t, idp_mode, mapper_mode)
         set_upstream_groups(t, ["/SSO/HEME/koki-user"])
         login()
+        expect_sync(changed=True)  # joined koki-user
         after1 = broker_groups(t)
         if after1 != ["/SSO/HEME/koki-user"]:
             raise RuntimeError("after login 1: %s" % after1)
         set_upstream_groups(t, ["/SSO/HEME/koki-admin"])
         login()
+        if syncs:
+            expect_sync(changed=True)  # joined koki-admin, left koki-user
         after2 = broker_groups(t)
         want = ["/SSO/HEME/koki-admin"] if syncs else ["/SSO/HEME/koki-user"]
         if after2 != want:
@@ -293,11 +228,14 @@ def scenario_late(t, label, idp_mode, mapper_mode, syncs):
     def run():
         configure(t, idp_mode, mapper_mode)
         login()
+        expect_sync(changed=False)  # no groups upstream yet: a sync that changes nothing
         after1 = broker_groups(t)
         if after1:
             raise RuntimeError("after login 1: %s" % after1)
         set_upstream_groups(t, ["/SSO/HEME/koki-user"])
         login()
+        if syncs:
+            expect_sync(changed=True)  # joined koki-user
         after2 = broker_groups(t)
         want = ["/SSO/HEME/koki-user"] if syncs else []
         if after2 != want:
@@ -310,6 +248,7 @@ def federated_link(t):
     def run():
         configure(t, "IMPORT", "IMPORT")
         login()
+        expect_sync(changed=False)
         u = broker_user(t)
         links = api("GET", "/admin/realms/%s/users/%s/federated-identity" % (BR, u["id"]), token=t)
         link = [li for li in links if li["identityProvider"] == IDP_ALIAS][0]
@@ -327,14 +266,53 @@ def federated_link(t):
     check("federated link: userId is the plain sub, '<alias>.<sub>' never matches", run)
 
 
+# ── Keycloak log ────────────────────────────────────────────────────────────
+
+# "2026-10-27 14:07:43,123 DEBUG [nrw.sit.keycloak.mapper.IdpGroupMapper] (executor-thread-1) IdpGroupMapper: user=alice idp=upstream mapper=sso-groups added=[] ..."
+# The "idp=" anchor keeps the mapper's DEBUG detail lines ("user=alice prefixes=...",
+# "user=alice currentGroups=...") out of the count.
+SUMMARY_LINE = re.compile(r"^\S+ \S+ (?P<level>[A-Z]+)\s+\[nrw\.sit\.keycloak\.mapper\.IdpGroupMapper\] .*"
+                          r"IdpGroupMapper: user=\S+ idp=\S+ mapper=\S+ added=")
+SYNC_MODE_WARNING = "does not explicitly support sync mode"
+
+
+def log_checks(scenarios_passed):
+    path = os.environ.get("KC_LOG")
+    if not path:
+        print("SKIP  Keycloak log: KC_LOG not set")
+        return
+    with open(path, errors="replace") as fh:
+        lines = fh.read().splitlines()
+    levels = [m.group("level") for m in map(SUMMARY_LINE.match, lines) if m]
+
+    def warning_free():
+        hits = [ln for ln in lines if SYNC_MODE_WARNING in ln]
+        if hits:
+            raise RuntimeError("%d line(s): %s" % (len(hits), snippet(hits[0])))
+        return "0 lines"
+    check("log: no '%s' warning" % SYNC_MODE_WARNING, warning_free)
+
+    def one_summary_per_sync():
+        if not scenarios_passed:
+            raise RuntimeError("not compared, a scenario failed (found %d summary line(s))" % len(levels))
+        got = {"syncs": len(levels), "info": levels.count("INFO")}
+        if got != expected_log:
+            raise RuntimeError("found %s, expected %s (levels: %s)" % (got, expected_log, levels))
+        if levels.count("WARN") or levels.count("ERROR"):
+            raise RuntimeError("WARN/ERROR summary lines: %s" % levels)
+        return "%d summary line(s), %d of them INFO (changed memberships), rest DEBUG" % (
+            got["syncs"], got["info"])
+    check("log: one summary line per sync, INFO only when memberships changed", one_summary_per_sync)
+
+
 def main():
-    t = admin_token()
+    t = ADMIN  # api() fetches and renews the admin token itself
     setup(t)
     for label, idp_mode, mapper_mode, syncs in MODES:
-        t = admin_token()
         scenario_update(t, label, idp_mode, mapper_mode, syncs)
         scenario_late(t, label, idp_mode, mapper_mode, syncs)
-    federated_link(admin_token())
+    federated_link(t)
+    log_checks(scenarios_passed=not failures)
     print()
     if failures:
         print("FAILED: %d check(s): %s" % (len(failures), ", ".join(failures)))

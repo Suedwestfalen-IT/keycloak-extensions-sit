@@ -52,6 +52,9 @@ mvn test -Dkeycloak.version=26.8.1          # local Maven/JDK 17+
 `build_jar.sh` and the image build keep using `-DskipTests`; the test code is compiled there
 but not executed.
 
+`ci/login-e2e/run.sh` and `ci/idp-mapper-e2e/run.sh` start the real Keycloak distribution with the
+jar and play logins with curl (shared runner and Python helpers in `ci/lib/`, no root, no Docker).
+
 `ci/kerberos-e2e/run.sh` goes one step further for the on-demand Kerberos authenticator: it
 sets up a throwaway MIT KDC, starts the real Keycloak distribution with the jar, configures a
 realm through the admin API and plays the login with `curl --negotiate` (ticket accepted,
@@ -97,7 +100,13 @@ all.
 
 `ci/idp-mapper-e2e/run.sh` (workflow `idp-mapper-e2e.yml`) plays this against the real Keycloak
 distribution, which brokers itself: for every sync mode a first login, a group change upstream and
-a group assigned only after the first login.
+a group assigned only after the first login. It also reads the Keycloak log: one summary line per
+sync (see below) and no "does not explicitly support sync mode" warning.
+
+The mapper declares *Import*, *Legacy* and *Force* as supported. A sync mode that a future Keycloak
+release adds is deliberately **not** claimed until its semantics have been checked: Keycloak then
+logs its "does not explicitly support sync mode" warning, and the unit test
+`everyKeycloakSyncModeHasBeenReviewed` fails on the new release.
 
 > Up to 1.7.0 the mapper also implemented `preprocessFederatedIdentity` as a "fallback" sync on
 > every login. It looked the user up by `BrokeredIdentityContext#getBrokerUserId()`
@@ -107,23 +116,30 @@ a group assigned only after the first login.
 
 ### Logging
 
-Each sync writes **one** line, INFO, or WARN when claimed groups could not be resolved:
+Each sync writes **one** summary line:
 
 ```
 IdpGroupMapper: user=m.wegmann@hemer.de idp=sit-sso mapper=sso-groups added=[SSO/HEME/koki-user] removed=[] skipped=[] notFound=[] created=[]
 ```
 
+| Level | When |
+|---|---|
+| WARN | `notFound` is not empty: claimed groups do not exist here and were not created (`createMissing` off), usually a configuration problem |
+| INFO | something changed: `added`, `removed`, `skipped` or `created` is not empty |
+| DEBUG | nothing changed. With sync mode *Force* this is most logins, so an unchanged sync does not cost an INFO line |
+
 | Field | Meaning |
 |---|---|
 | `added` / `removed` | memberships joined / left in this sync |
 | `skipped` | groups with admin roles not joined because the IdP does not allow admin role mapping |
-| `notFound` | claimed groups that do not exist here and were not created (`createMissing` off) – the line is WARN then |
+| `notFound` | claimed groups that do not exist here and were not created (`createMissing` off) |
 | `created` | groups created on the way (`createMissing` on) |
 
-No line at all for a login means the mapper did not run a sync (e.g. sync mode *Import* on a
-further login). Group changes made by mappers do not create admin events in Keycloak (neither
-for this mapper nor for the built-in ones), so the server log is the place to look. Details per
-group are logged on DEBUG (`--log-level=nrw.sit.keycloak.mapper:debug`).
+On INFO the server log therefore shows every membership change made by the mapper (Keycloak
+creates no admin events for group changes made by mappers, neither for this one nor for the
+built-in ones). To see every sync, including the unchanged ones, and the per-group details, run
+the mapper's logger on DEBUG: `--log-level=info,nrw.sit.keycloak.mapper:debug`. No summary line
+at all on DEBUG means the mapper did not run a sync (e.g. sync mode *Import* on a further login).
 
 ### Stripping multiple prefixes
 
