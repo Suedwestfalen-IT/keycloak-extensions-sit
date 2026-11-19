@@ -27,6 +27,8 @@ jobs:
       - name: Build and run unit tests
         run: |
           set -o pipefail
+          mvn -v; cat ~/.m2/settings.xml | sed -E 's#<password>.*</password>#<password>x</password>#'; ls -la ~/.m2 ~/.m2/repository 2>&1 | head -30
+          mvn -B -X test 2>&1 | grep -iE 'resources-plugin|transport|connector|http/|status|Caused|Exception|repository|\\.lastUpdated' | head -200 || true
           mvn -B --no-transfer-progress test 2>&1 | tee build.log
 
       - name: Report failures as annotations
