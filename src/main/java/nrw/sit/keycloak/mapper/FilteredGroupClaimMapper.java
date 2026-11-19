@@ -6,9 +6,8 @@ import org.keycloak.protocol.oidc.mappers.*;
 import org.keycloak.provider.ProviderConfigProperty;
 import org.keycloak.representations.IDToken;
 
-import java.util.*;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * OIDC Protocol Mapper that adds a filtered list of group paths to a JWT claim.
@@ -27,10 +26,10 @@ public class FilteredGroupClaimMapper extends AbstractOIDCProtocolMapper
 
     public static final String PROVIDER_ID = "sit-oidc-filtered-group-claim-mapper";
 
-    static final String PATH_PREFIX = "pathPrefix";
-    static final String REGEX       = "groupRegex";
+    static final String PATH_PREFIX = FilteredGroups.PATH_PREFIX;
+    static final String REGEX       = FilteredGroups.REGEX;
     static final String CLAIM_NAME  = "claimName";
-    static final String FULL_PATH   = "fullPath";
+    static final String FULL_PATH   = FilteredGroups.FULL_PATH;
 
     private static final List<ProviderConfigProperty> CONFIG_PROPERTIES;
 
@@ -89,58 +88,12 @@ public class FilteredGroupClaimMapper extends AbstractOIDCProtocolMapper
                             UserSessionModel userSession, KeycloakSession session,
                             ClientSessionContext clientSessionCtx) {
 
-        UserModel user      = userSession.getUser();
-        RealmModel realm    = session.getContext().getRealm();
-        String claimName    = cfg(mappingModel, CLAIM_NAME, "groups");
-        boolean fullPath    = Boolean.parseBoolean(cfg(mappingModel, FULL_PATH, "true"));
-        String prefix       = cfg(mappingModel, PATH_PREFIX, "");
-        String regexStr     = cfg(mappingModel, REGEX, "");
-
-        Pattern pattern = null;
-        if (!regexStr.isEmpty()) {
-            try {
-                pattern = Pattern.compile(regexStr);
-            } catch (Exception e) {
-                LOG.warnf("FilteredGroupClaimMapper: invalid regex '%s': %s", regexStr, e.getMessage());
-            }
-        }
-
-        final Pattern finalPattern = pattern;
-
-        List<String> groups = user.getGroupsStream()
-                .map(g -> buildPath(realm, g))
-                .filter(path -> GroupPath.matches(path, prefix))
-                .filter(path -> finalPattern == null || finalPattern.matcher(path).matches())
-                .map(path -> fullPath ? path : leafName(path))
-                .sorted()
-                .collect(Collectors.toList());
+        UserModel user    = userSession.getUser();
+        String claimName  = FilteredGroups.cfg(mappingModel, CLAIM_NAME, "groups");
+        List<String> groups = FilteredGroups.collect(user, mappingModel);
 
         LOG.debugf("FilteredGroupClaimMapper: user=%s claim=%s groups=%s", user.getUsername(), claimName, groups);
 
         token.getOtherClaims().put(claimName, groups);
-    }
-
-    // ── Helpers ──────────────────────────────────────────────────────────────
-
-    /** Builds the full path of a group, e.g. /SSO/koki/koki-user */
-    private String buildPath(RealmModel realm, GroupModel group) {
-        Deque<String> parts = new ArrayDeque<>();
-        GroupModel g = group;
-        while (g != null) {
-            parts.addFirst(g.getName());
-            g = g.getParent();
-        }
-        return "/" + String.join("/", parts);
-    }
-
-    /** Returns the last segment of a path, e.g. "koki-user" from "/SSO/koki/koki-user" */
-    private String leafName(String path) {
-        int idx = path.lastIndexOf('/');
-        return idx >= 0 ? path.substring(idx + 1) : path;
-    }
-
-    private String cfg(ProtocolMapperModel model, String key, String def) {
-        String v = model.getConfig().get(key);
-        return (v == null || v.isBlank()) ? def : v;
     }
 }
