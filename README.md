@@ -607,11 +607,16 @@ RUN /opt/keycloak/bin/kc.sh build
 
 ## Changelog
 
+### 1.8.1
+
+* `sit-saml-filtered-group-mapper`: without matching groups the attribute is now sent without
+  values (empty list) instead of being omitted. New option *Send empty attribute* (default ON);
+  switch it OFF to get the 1.8.0 behaviour (no attribute) for SPs that cannot handle it.
+
 ### 1.8.0
 
 * New SAML protocol mapper `sit-saml-filtered-group-mapper` (*SIT: Filtered Group Membership (SAML)*),
-  same filters as the OIDC mapper plus a case option (`keep`, `lower`, `upper`). Without matching
-  groups it sends an empty attribute (switch *Send empty attribute* to omit it). Filtering logic of
+  same filters as the OIDC mapper plus a case option (`keep`, `lower`, `upper`). Filtering logic of
   both mappers is shared in `FilteredGroups`.
 * `sit-oidc-filtered-group-claim-mapper` no longer emits duplicates when *Full group path* is OFF
   and two groups share a name.
