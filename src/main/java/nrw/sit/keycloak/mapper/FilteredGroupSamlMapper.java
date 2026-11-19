@@ -32,6 +32,7 @@ public class FilteredGroupSamlMapper extends AbstractSAMLProtocolMapper
     public static final String PROVIDER_ID = "sit-saml-filtered-group-mapper";
 
     static final String SINGLE_ATTRIBUTE = "single";
+    static final String EMPTY_ATTRIBUTE  = "emptyAttribute";
 
     private static final List<ProviderConfigProperty> CONFIG_PROPERTIES = new ArrayList<>();
 
@@ -52,6 +53,15 @@ public class FilteredGroupSamlMapper extends AbstractSAMLProtocolMapper
         single.setType(ProviderConfigProperty.BOOLEAN_TYPE);
         single.setDefaultValue("true");
         CONFIG_PROPERTIES.add(single);
+
+        ProviderConfigProperty empty = new ProviderConfigProperty();
+        empty.setName(EMPTY_ATTRIBUTE);
+        empty.setLabel("Send empty attribute");
+        empty.setHelpText("If ON and no group matches, the attribute is sent without values (empty list). "
+                + "If OFF, the attribute is omitted, like Keycloak's built-in group mapper.");
+        empty.setType(ProviderConfigProperty.BOOLEAN_TYPE);
+        empty.setDefaultValue("true");
+        CONFIG_PROPERTIES.add(empty);
 
         ProviderConfigProperty fullPath = new ProviderConfigProperty();
         fullPath.setName(FilteredGroups.FULL_PATH);
@@ -113,8 +123,14 @@ public class FilteredGroupSamlMapper extends AbstractSAMLProtocolMapper
 
         LOG.debugf("FilteredGroupSamlMapper: user=%s single=%s groups=%s", user.getUsername(), single, groups);
 
-        // like the built-in mapper: no attribute at all when no group matches
-        if (groups.isEmpty()) return;
+        if (groups.isEmpty()) {
+            // empty list = attribute without values; OFF behaves like the built-in mapper (no attribute)
+            if (Boolean.parseBoolean(FilteredGroups.cfg(mappingModel, EMPTY_ATTRIBUTE, "true"))) {
+                AttributeType attribute = AttributeStatementHelper.createAttributeType(mappingModel);
+                attributeStatement.addAttribute(new AttributeStatementType.ASTChoiceType(attribute));
+            }
+            return;
+        }
 
         if (single) {
             AttributeType attribute = AttributeStatementHelper.createAttributeType(mappingModel);

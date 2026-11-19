@@ -104,10 +104,33 @@ class FilteredGroupSamlMapperTest {
     }
 
     @Test
-    void noAttributeWhenNoGroupMatches() {
+    void emptyAttributeWhenNoGroupMatches() {
         member("/Other/y");
 
-        assertEquals(List.of(), attributes("member", FilteredGroups.PATH_PREFIX, "/SSO"));
+        List<AttributeType> attrs = attributes("member", FilteredGroups.PATH_PREFIX, "/SSO");
+        assertEquals(1, attrs.size());
+        assertEquals("member", attrs.get(0).getName());
+        assertEquals(List.of(), values(attrs.get(0)));
+
+        // also with one attribute per group
+        attrs = attributes("member", FilteredGroupSamlMapper.SINGLE_ATTRIBUTE, "false");
+        assertEquals(1, attrs.size());
+    }
+
+    @Test
+    void userWithoutGroupsGetsEmptyAttribute() {
+        List<AttributeType> attrs = attributes("member");
+        assertEquals(1, attrs.size());
+        assertEquals(List.of(), values(attrs.get(0)));
+    }
+
+    @Test
+    void noAttributeWhenNoGroupMatchesAndEmptyAttributeIsOff() {
+        member("/Other/y");
+
+        assertEquals(List.of(), attributes("member",
+                FilteredGroups.PATH_PREFIX, "/SSO",
+                FilteredGroupSamlMapper.EMPTY_ATTRIBUTE, "false"));
     }
 
     @Test
@@ -121,6 +144,7 @@ class FilteredGroupSamlMapperTest {
                 AttributeStatementHelper.FRIENDLY_NAME,
                 AttributeStatementHelper.SAML_ATTRIBUTE_NAMEFORMAT,
                 FilteredGroupSamlMapper.SINGLE_ATTRIBUTE,
+                FilteredGroupSamlMapper.EMPTY_ATTRIBUTE,
                 FilteredGroups.FULL_PATH,
                 FilteredGroups.GROUP_CASE,
                 FilteredGroups.PATH_PREFIX,

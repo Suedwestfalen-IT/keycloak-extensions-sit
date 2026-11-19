@@ -21,7 +21,7 @@ Built with Claude.
 | Provider ID | Display Name | Purpose |
 |---|---|---|
 | `sit-oidc-filtered-group-claim-mapper` | SIT: Filtered Group Membership | Adds a filtered list of group paths to a JWT claim. Filter by path prefix and/or regex. |
-| `sit-saml-filtered-group-mapper` | SIT: Filtered Group Membership (SAML) | SAML counterpart: adds the filtered group paths as SAML attribute (one attribute with all values, or one per group). Same prefix/regex/full-path filters, plus *Group name case* `keep` / `lower` / `upper` (applied after filtering; groups that become equal are emitted once). |
+| `sit-saml-filtered-group-mapper` | SIT: Filtered Group Membership (SAML) | SAML counterpart: adds the filtered group paths as SAML attribute (one attribute with all values, or one per group). Same prefix/regex/full-path filters, plus *Group name case* `keep` / `lower` / `upper` (applied after filtering; groups that become equal are emitted once). Without matching groups it sends the attribute without values (empty list); *Send empty attribute* OFF omits it like the built-in mapper. |
 
 ### Identity Provider Mappers
 
@@ -610,7 +610,8 @@ RUN /opt/keycloak/bin/kc.sh build
 ### 1.8.0
 
 * New SAML protocol mapper `sit-saml-filtered-group-mapper` (*SIT: Filtered Group Membership (SAML)*),
-  same filters as the OIDC mapper plus a case option (`keep`, `lower`, `upper`). Filtering logic of
+  same filters as the OIDC mapper plus a case option (`keep`, `lower`, `upper`). Without matching
+  groups it sends an empty attribute (switch *Send empty attribute* to omit it). Filtering logic of
   both mappers is shared in `FilteredGroups`.
 * `sit-oidc-filtered-group-claim-mapper` no longer emits duplicates when *Full group path* is OFF
   and two groups share a name.
