@@ -44,7 +44,7 @@ class ServiceRegistrationTest {
 
     @Test
     void protocolMappers() throws Exception {
-        assertRegistered(ProtocolMapper.class, 1);
+        assertRegistered(ProtocolMapper.class, 2);
     }
 
     private static void assertRegistered(Class<? extends ProviderFactory<?>> spi, int expectedCount) throws Exception {

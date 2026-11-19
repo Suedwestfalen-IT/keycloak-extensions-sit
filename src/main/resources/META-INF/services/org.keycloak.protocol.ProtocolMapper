@@ -1,1 +1,2 @@
 nrw.sit.keycloak.mapper.FilteredGroupClaimMapper
+nrw.sit.keycloak.mapper.FilteredGroupSamlMapper

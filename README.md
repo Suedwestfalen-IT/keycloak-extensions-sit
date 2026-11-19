@@ -21,6 +21,7 @@ Built with Claude.
 | Provider ID | Display Name | Purpose |
 |---|---|---|
 | `sit-oidc-filtered-group-claim-mapper` | SIT: Filtered Group Membership | Adds a filtered list of group paths to a JWT claim. Filter by path prefix and/or regex. |
+| `sit-saml-filtered-group-mapper` | SIT: Filtered Group Membership (SAML) | SAML counterpart: adds the filtered group paths as SAML attribute (one attribute with all values, or one per group). Same prefix/regex/full-path filters, plus *Group name case* `keep` / `lower` / `upper` (applied after filtering; groups that become equal are emitted once). |
 
 ### Identity Provider Mappers
 
@@ -606,6 +607,14 @@ RUN /opt/keycloak/bin/kc.sh build
 
 ## Changelog
 
+### 1.8.0
+
+* New SAML protocol mapper `sit-saml-filtered-group-mapper` (*SIT: Filtered Group Membership (SAML)*),
+  same filters as the OIDC mapper plus a case option (`keep`, `lower`, `upper`). Filtering logic of
+  both mappers is shared in `FilteredGroups`.
+* `sit-oidc-filtered-group-claim-mapper` no longer emits duplicates when *Full group path* is OFF
+  and two groups share a name.
+
 ### 1.7.0
 
 First release after 1.6.0. **Requires Keycloak 26.8 or newer.**
@@ -643,7 +652,7 @@ scenario), shared helpers in `ci/lib/`.
 
 | Extension version | Keycloak |
 |---|---|
-| 1.7.x | ≥ 26.8 (uses the IdP admin role mapping check introduced in 26.8.0) |
+| 1.7.x – 1.8.x | ≥ 26.8 (uses the IdP admin role mapping check introduced in 26.8.0) |
 | 1.0 – 1.6 | ≥ 24 (tested against 26.x up to 26.7) |
 
 Requires Java 17+.
